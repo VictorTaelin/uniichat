@@ -281,7 +281,9 @@ test("config_write writes the whole file, however few bytes each write takes", (
   const dir = fresh();
   const path = dir + "/keys.enc";
   const text = config.config_seal({ anthropic: "sk-ant-long-" + "x".repeat(500), apns: "ü€" }, "pw");
-  const fds = () => fs.readdirSync("/proc/self/fd").length;
+  // its open descriptors, where a dir lists them (none on Windows)
+  const listed = process.platform === "linux" ? "/proc/self/fd" : process.platform === "darwin" ? "/dev/fd" : null;
+  const fds = () => (listed === null ? 0 : fs.readdirSync(listed).length);
   const before = fds();
   // a write that takes 1 to 3 bytes at a time
   let calls = 0;
@@ -362,3 +364,61 @@ test("a keys.enc of the first kind (no cost kept) opens by N 2^15, and is sealed
   expect(add.out.keys).toEqual({ anthropic: "sk-first", openai: "sk-o", resend: "re_first", apns: "" });
   expect(JSON.parse(fs.readFileSync(other + "/keys.enc", "utf8")).N).toBe(2 ** 17);
 });
+
+// a start at a terminal (a pty, by script(1)) with keys.enc there and no
+// passphrase given, so it is asked for, ended by `sig`: as echo goes off,
+// before the prompt shows (`early`; an stty that sends it), or while the
+// prompt is up. What it ended with, whether the terminal echoes then,
+// and whether it set the terminal back itself once it turned echo off
+// (Bun does too as it ends, so `echo` alone can't tell)
+async function asked(sig: "SIGINT" | "SIGTERM", early: boolean): Promise<{ code: string; echo: boolean; restored: boolean; said: string }> {
+  const dir = fresh();
+  fs.writeFileSync(dir + "/read.ts", READ);
+  fs.writeFileSync(dir + "/keys.enc", config.config_seal({ anthropic: "sk-a" }, "pw"), { mode: 0o600 });
+  fs.mkdirSync(dir + "/bin");
+  // stty as it is, but noting each call, and turning echo off it notes
+  // who ran it (and signals it, if early)
+  fs.writeFileSync(dir + "/bin/stty", [
+    "#!/bin/sh",
+    "echo \"$*\" >> " + dir + "/stty.log",
+    JSON.stringify(Bun.which("stty")) + " \"$@\"; rc=$?",
+    "if [ \"$1\" = -echo ]; then echo $PPID > " + dir + "/asker; " + (early ? "kill -s " + sig.slice(3) + " $PPID; " : "") + "fi",
+    "exit $rc",
+  ].join("\n"), { mode: 0o755 });
+  fs.writeFileSync(dir + "/run.sh", JSON.stringify(process.execPath) + " " + dir + "/read.ts\necho \"rc=$?\"\nstty -a\n");
+  const base = { ...process.env };
+  for (const v of ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "RESEND_API_KEY", "APNS_KEY", "UNII_PASSPHRASE", "UNII_PASSPHRASE_FILE", "CREDENTIALS_DIRECTORY", "UNII_WORKER"]) {
+    delete base[v];
+  }
+  const log = dir + "/tty.log";
+  const proc = Bun.spawn(["script", "-qfec", "sh " + dir + "/run.sh", log], { env: { ...base, UNII_DIR: dir, PATH: dir + "/bin:" + process.env.PATH }, stdin: "pipe", stdout: "ignore", stderr: "ignore" });
+  const text = () => (fs.existsSync(log) ? fs.readFileSync(log, "utf8").replaceAll("\r", "") : "");
+  try {
+    if (!early) {
+      for (let k = 0; k < 100 && !(text().includes("passphrase of") && fs.existsSync(dir + "/asker")); k++) {
+        await Bun.sleep(50);
+      }
+      await Bun.sleep(300);
+      process.kill(Number(fs.readFileSync(dir + "/asker", "utf8")), sig);
+    }
+    const ended = await Promise.race([proc.exited, Bun.sleep(8000).then(() => null)]);
+    const said = text();
+    const calls = fs.readFileSync(dir + "/stty.log", "utf8").trim().split("\n");
+    const restored = /^[0-9a-f]+(:[0-9a-f]+)+$/.test(calls[calls.indexOf("-echo") + 1] ?? "");
+    return { code: ended === null ? "still asking" : (said.match(/^rc=(\d+)$/m)?.[1] ?? "none"), echo: /(^|\s)echo(\s|$)/m.test(said.split(/^rc=/m)[1] ?? ""), restored, said };
+  } finally {
+    proc.kill("SIGKILL");
+  }
+}
+
+const TTY = process.platform === "linux" && Bun.which("script") !== null && Bun.which("stty") !== null;
+
+for (const sig of ["SIGINT", "SIGTERM"] as const) {
+  for (const early of [true, false]) {
+    test.skipIf(!TTY)(sig + (early ? " as echo goes off, before the prompt" : " while the prompt is up") + ": the start ends (130), the terminal echoing again", async () => {
+      const got = await asked(sig, early);
+      expect({ code: got.code, echo: got.echo, restored: got.restored }).toEqual({ code: "130", echo: true, restored: true });
+      expect(got.said).toContain("no passphrase given");
+    }, 15000);
+  }
+}

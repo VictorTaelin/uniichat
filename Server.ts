@@ -2095,8 +2095,11 @@ export namespace Main {
   // (Main.start); one that fails to start leaves that one serving. Its
   // own code changes only on a restart, so a deploy of code that takes
   // the keys otherwise (config.HANDOVER) is refused: its workers would
-  // start on none. So is each start of a worker on such code, a dead
-  // one's again too: then the server ends (1), to be started anew on it
+  // start on none. Each worker's start checks again (the code may change
+  // after the deploy's check, as one is being written): a replacement
+  // is refused alone, the one it would follow serving on; a dead one's
+  // start (none serves its users) ends the server (1), to be started
+  // anew on that code
   export function supervise(port: number, run: string[]): void {
     const cloud = Cloud.open(() => {}, () => {}, async () => null);
     const workers: Bun.Subprocess[] = [];
@@ -2122,8 +2125,12 @@ export namespace Main {
       all.forEach((w) => w.kill());
       Promise.all([...all].map((w) => w.exited)).then(() => process.exit(code));
     };
-    const start = (k: number) => {
+    const start = (k: number, deploy = false) => {
       if (!Main.hands(import.meta.dir + "/Config.ts")) {
+        if (deploy) {
+          console.error("unii: worker " + k + " not replaced: the code here takes the keys otherwise than this server hands them (Config.ts HANDOVER); the one before serves on; restart the server to run that code");
+          return;
+        }
         console.error("unii: worker " + k + " not started: the code here takes the keys otherwise than this server hands them (Config.ts HANDOVER); the server ends, to be started again on it");
         end(1);
         return;
@@ -2167,7 +2174,7 @@ export namespace Main {
         console.error("unii: deploy refused: that code takes the keys otherwise than this server hands them (Config.ts HANDOVER); restart the server instead");
         return;
       }
-      workers.forEach((_, k) => start(k));
+      workers.forEach((_, k) => start(k, true));
     });
     console.log("unii: " + config.SITE + ", " + config.WORKERS + " workers on 127.0.0.1:" + (port + 1) + "-" + (port + config.WORKERS) + ", routes on " + port);
   }

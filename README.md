@@ -134,8 +134,10 @@ is kept. Run the server as a user of its own for that. Nor from what
 leaves its memory: a core dump of it (if it crashes) or swap holds the
 keys in plain text. Turn core dumps off where it runs (`ulimit -c 0`
 before starting it, or `LimitCORE=0` in its systemd unit; with
-systemd-coredump, `Storage=none` in /etc/systemd/coredump.conf), and
-encrypt swap or run without it.
+systemd-coredump, `Storage=none` and `ProcessSizeMax=0` in
+/etc/systemd/coredump.conf: with Storage=none alone each dump is still
+written to /var/lib/systemd/coredump to be processed, then deleted),
+and encrypt swap or run without it.
 
 With only an OpenAI key, set `vendors`, `pick` and `compactor` to
 `openai-api` models, e.g. `UNII_VENDORS=openai-api

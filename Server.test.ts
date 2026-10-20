@@ -125,3 +125,71 @@ test("Main.hands: a deploy's Config.ts hands over alike by its code, not its com
   expect(await proc.exited).toBe(0);
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+// a supervisor of 2 workers (each writes "<pid> <k>" to `pids` as it
+// starts) whose Config.ts changes to hand over otherwise right after a
+// deploy's first check (Main.hands sees it so from then on), as when a
+// deploy's files are still being written
+const RACE = `
+const { Main, serve } = await import(${JSON.stringify(import.meta.dir + "/Server.ts")});
+const real = Main.hands;
+let checks = -1;
+process.on("SIGHUP", () => (checks = 0));
+Main.hands = (path) => (checks < 0 || checks++ === 0 ? real(path) : false);
+await serve(Number(process.argv[2]), [process.execPath, "--preload", process.env.UNII_DIR + "/pid.ts", ${JSON.stringify(import.meta.dir + "/Server.ts")}]);
+`;
+const PID = `require("node:fs").appendFileSync(process.env.UNII_DIR + "/pids", process.pid + " " + process.env.UNII_WORKER + "\\n");`;
+
+test("a deploy whose Config.ts changes after its first check leaves the workers serving; a dead one's start on it ends the server", async () => {
+  const dir = fs.mkdtempSync(os.tmpdir() + "/unii-server-");
+  fs.writeFileSync(dir + "/race.ts", RACE);
+  fs.writeFileSync(dir + "/pid.ts", PID);
+  const port = 20000 + Math.floor(Math.random() * 20000);
+  const site = "http://127.0.0.1:" + port;
+  const log = dir + "/log";
+  const env: Record<string, string | undefined> = { ...process.env, UNII_DIR: dir, UNII_SITE: site, UNII_WORKERS: "2" };
+  for (const v of ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "RESEND_API_KEY", "APNS_KEY", "UNII_PASSPHRASE", "UNII_PASSPHRASE_FILE", "CREDENTIALS_DIRECTORY", "UNII_WORKER"]) {
+    delete env[v];
+  }
+  const proc = Bun.spawn([process.execPath, dir + "/race.ts", String(port)], { env, stdin: "ignore", stdout: Bun.file(log), stderr: Bun.file(dir + "/err") });
+  const pids = () => (fs.existsSync(dir + "/pids") ? fs.readFileSync(dir + "/pids", "utf8").trim().split("\n").map((line) => Number(line.split(" ")[0])) : []);
+  const up = async (k: number) => (await fetch("http://127.0.0.1:" + (port + 1 + k) + "/").catch(() => null)) !== null;
+  const alive = (pid: number) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  try {
+    for (let k = 0; k < 200 && !(pids().length === 2 && (await up(0)) && (await up(1))); k++) {
+      await Bun.sleep(50);
+    }
+    const before = pids();
+    expect(before.length).toBe(2);
+    await Bun.sleep(500);
+    proc.kill("SIGHUP");
+    await Bun.sleep(2000);
+    const said = fs.readFileSync(dir + "/err", "utf8");
+    // the replacements refused, the server and both workers on
+    expect(proc.exitCode).toBeNull();
+    expect(pids()).toEqual(before);
+    expect(before.every(alive)).toBe(true);
+    expect((await up(0)) && (await up(1))).toBe(true);
+    expect(said).toContain("worker 0 not replaced");
+    expect(said).toContain("worker 1 not replaced");
+    // a worker that dies is started again only on code that hands over
+    // alike: here none, so the server ends (1)
+    process.kill(before[0], "SIGKILL");
+    const code = await Promise.race([proc.exited, Bun.sleep(10000).then(() => "running")]);
+    expect(code).toBe(1);
+    expect(fs.readFileSync(dir + "/err", "utf8")).toContain("worker 0 not started");
+    await Bun.sleep(500);
+    expect(pids().some(alive)).toBe(false);
+  } finally {
+    proc.kill("SIGKILL");
+    pids().forEach((pid) => alive(pid) && process.kill(pid, "SIGKILL"));
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}, 30000);

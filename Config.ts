@@ -88,7 +88,7 @@ const KDF_MAX = 2 ** 30;
 // environment, which holds them no more
 export const HANDOVER = 1;
 
-export const KEYS: Record<string, string> = config_start();
+export const KEYS: Record<string, string> = await config_start();
 
 // Config
 // ======
@@ -127,9 +127,9 @@ function config_key(name: string): string {
 
 // config_keys, or the server ends saying why it can't start on them (no
 // stack: the passphrase or keys.enc is wrong, not the code)
-function config_start(): Record<string, string> {
+async function config_start(): Promise<Record<string, string>> {
   try {
-    return config_keys();
+    return await config_keys();
   } catch (err) {
     if (err instanceof Error && err.message.startsWith("config: ")) {
       console.error("unii: " + err.message.slice("config: ".length));
@@ -145,7 +145,7 @@ function config_start(): Record<string, string> {
 // passphrase: the environment's alone). The passphrase's variables and
 // systemd's credentials dir leave the environment too: no worker, nor
 // program an agent runs, needs them
-function config_keys(): Record<string, string> {
+async function config_keys(): Promise<Record<string, string>> {
   const env = Object.fromEntries(Object.entries(VARS).map(([name, v]) => [name, config_key(v)]));
   const pass = config_key("UNII_PASSPHRASE");
   const file = config_key("UNII_PASSPHRASE_FILE");
@@ -158,7 +158,7 @@ function config_keys(): Record<string, string> {
   if (read === null && Object.keys(given).length === 0) {
     return env;
   }
-  const word = config_word(pass, file, creds, read !== null);
+  const word = await config_word(pass, file, creds, read !== null);
   if (word === null) {
     return env;
   }
@@ -257,7 +257,7 @@ export function config_write(path: string, text: string, write = fs.writeSync): 
 // in `creds`, $CREDENTIALS_DIRECTORY); else typed, if `ask`; else none.
 // Spaces and newlines at its ends don't count, wherever it comes from (a
 // file's last newline)
-function config_word(pass: string, file: string, creds: string, ask: boolean): string | null {
+async function config_word(pass: string, file: string, creds: string, ask: boolean): Promise<string | null> {
   if (pass !== "" && file !== "") {
     throw new Error("config: set UNII_PASSPHRASE or UNII_PASSPHRASE_FILE, not both");
   }
@@ -285,11 +285,10 @@ function config_word(pass: string, file: string, creds: string, ask: boolean): s
 }
 
 // the passphrase, typed at the terminal unseen. Not shown means stty
-// turned echo off; if it can't, no prompt (it would show). Echo is back
-// however the prompt ends: the signals are caught before it is turned
-// off; Ctrl-C ends the start (130; so does Enter alone, which prompt()
-// tells not apart)
-function config_ask(): string {
+// turned echo off; if it can't, no prompt (it would show). It is read
+// as the server waits on nothing else, so a signal (Ctrl-C), from as
+// echo goes off, ends the start (130) at once, echo back on
+async function config_ask(): Promise<string> {
   const why = "config: " + SEALED + " needs its passphrase: set UNII_PASSPHRASE_FILE (or UNII_PASSPHRASE), or start at a terminal";
   if (!process.stdin.isTTY) {
     throw new Error(why);
@@ -307,39 +306,63 @@ function config_ask(): string {
   if (saved === null || saved === "") {
     throw noecho;
   }
-  // a signal, from here on, ends the start once echo is back: one while
-  // the prompt is up makes prompt() return null (the handler runs after)
-  let ended = false;
+  let asked = false;
+  const back = () => {
+    stty(saved);
+    if (asked) {
+      process.stdout.write("\n");
+    }
+  };
   const quit = () => {
-    ended = true;
+    back();
+    console.error("unii: no passphrase given");
+    process.exit(130);
   };
   const sigs = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
   sigs.forEach((sig) => process.on(sig, quit));
-  let typed: string | null = null;
-  let asked = false;
+  let typed: string | null;
   try {
     if (stty("-echo") === null) {
       throw noecho;
     }
-    if (!ended) {
-      asked = true;
-      typed = prompt("unii: passphrase of " + SEALED + ":");
-    }
+    // a signal sent so far is taken (quit) before the prompt shows
+    await new Promise((done) => setTimeout(done, 0));
+    asked = true;
+    process.stdout.write("unii: passphrase of " + SEALED + ": ");
+    typed = await config_line();
   } finally {
-    stty(saved);
     sigs.forEach((sig) => process.off(sig, quit));
-    if (asked) {
-      process.stdout.write("\n");
-    }
+    back();
   }
-  if (typed === null) {
-    console.error("unii: no passphrase given");
-    process.exit(130);
-  }
-  if (typed.trim() === "") {
+  if (typed === null || typed.trim() === "") {
     throw new Error("config: no passphrase typed for " + SEALED);
   }
   return typed.trim();
+}
+
+// a line read from stdin (null: it ended first), then stdin left alone
+function config_line(): Promise<string | null> {
+  return new Promise((done) => {
+    let got = "";
+    const stdin = process.stdin;
+    const finish = (line: string | null) => {
+      stdin.off("data", data);
+      stdin.off("end", end);
+      stdin.pause();
+      done(line);
+    };
+    const data = (chunk: Buffer | string) => {
+      got += chunk.toString();
+      const at = got.indexOf("\n");
+      if (at >= 0) {
+        finish(got.slice(0, at).replace(/\r$/, ""));
+      }
+    };
+    const end = () => finish(null);
+    stdin.on("data", data);
+    stdin.on("end", end);
+    stdin.resume();
+  });
 }
 
 type Cost = { N: number; r: number; p: number };
