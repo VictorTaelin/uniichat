@@ -7,7 +7,8 @@
 // command as itself; a file tool its path, read's lines after it, write's
 // content in a block, edit's files (the diff comes in its result); zoom and
 // date the message (`#6243`, a line `#6243+8`, an agent by name); spawn its
-// tasks, tell and computer their name and text in blocks. Any other call, or an
+// tasks, tell and computer their name and text in blocks; schedule its time
+// (or cron) and zone, its message in a block. Any other call, or an
 // edit whose edits are no list, shows its name and short values as arguments
 // (`web_search "bend"`; short: JSON within SHORT chars, and a string without
 // spaces or escapes), over a code block for each other value, keyed by its name
@@ -50,6 +51,7 @@ const READS = new Map<string, (x: Input) => Shown>([
   ["spawn",    (x) => ({ head: tasks_show(x.tasks, x.effort), blocks: (Array.isArray(x.tasks) ? x.tasks : []).flatMap(text_block) })],
   ["tell",     (x) => ({ head: String(x.name ?? ""), blocks: text_block(x.message) })],
   ["computer", (x) => ({ head: "", blocks: text_block(x.task) })],
+  ["schedule", (x) => ({ head: (x.cron === undefined ? String(x.at ?? "") : "cron " + x.cron) + " " + String(x.zone ?? ""), blocks: text_block(x.message) })],
 ]);
 
 // Report

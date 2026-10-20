@@ -32,6 +32,10 @@ How it works
   and can drive a Mac's screen, on any computer where `unii` is open
   (each is a device it can name). It can spawn subagents, which work in
   the background and report back as messages.
+- **Schedules.** The agent can schedule a message to itself, once or by
+  a cron expression, in the user's time zone. At its time it arrives as
+  the timer's, not the user's, whether or not anyone has the chat open;
+  the site's ⏰ lists and cancels them.
 - **Import.** Bring your past Claude and ChatGPT chats (Claude Code and
   Codex folders, or the websites' exports); they join the tree.
 

@@ -350,7 +350,10 @@ var TOOL = {
   edit: "\uD83D\uDCDD",
   spawn: "\uD83E\uDD16",
   tell: "\uD83D\uDCAC",
-  computer: "\uD83D\uDDB1️"
+  computer: "\uD83D\uDDB1️",
+  schedule: "⏰",
+  schedules: "⏰",
+  unschedule: "⏰"
 };
 var TOOL_ANY = "\uD83D\uDD27";
 var GLYPH = {
@@ -385,7 +388,8 @@ var READS = new Map([
   ["date", (x) => ({ head: msg_show(x.id, 1), blocks: [] })],
   ["spawn", (x) => ({ head: tasks_show(x.tasks, x.effort), blocks: (Array.isArray(x.tasks) ? x.tasks : []).flatMap(text_block) })],
   ["tell", (x) => ({ head: String(x.name ?? ""), blocks: text_block(x.message) })],
-  ["computer", (x) => ({ head: "", blocks: text_block(x.task) })]
+  ["computer", (x) => ({ head: "", blocks: text_block(x.task) })],
+  ["schedule", (x) => ({ head: (x.cron === undefined ? String(x.at ?? "") : "cron " + x.cron) + " " + String(x.zone ?? ""), blocks: text_block(x.message) })]
 ]);
 function report_read(text) {
   const m = /^\[([^\]\n]+)\]\s*([\s\S]*?)(?:\s*Full chat: zoom\("[^"\n]*"\))?\s*$/.exec(text);
@@ -915,6 +919,7 @@ function view_new() {
     bills: false,
     credits: null,
     importing: null,
+    timers: [],
     parts: [],
     turn: Infinity,
     fold: null,
@@ -1075,6 +1080,9 @@ function view_act(v, act) {
       v.page = known ?? { name: act.name, log: null, live: [] };
       v.pages.set(act.name, v.page);
       return known === undefined ? [{ $: "agent", name: act.name }] : [];
+    }
+    case "Unschedule": {
+      return [{ $: "unschedule", id: act.id }];
     }
   }
 }
@@ -1375,6 +1383,35 @@ function entry_body(kind, text) {
   }
 }
 
+// Timer.ts
+var AHEAD = 8 * 366;
+var DAYS = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+var CLOCKS = new Map;
+function clock(zone) {
+  if (!CLOCKS.has(zone)) {
+    try {
+      const fields = { year: "numeric", month: "numeric", day: "numeric", hour: "numeric", minute: "numeric", weekday: "short" };
+      CLOCKS.set(zone, new Intl.DateTimeFormat("en-US", { timeZone: zone, hourCycle: "h23", ...fields }));
+    } catch {
+      return null;
+    }
+  }
+  return CLOCKS.get(zone);
+}
+function wall(ms, zone) {
+  const parts = Object.fromEntries(clock(zone).formatToParts(ms).map((p) => [p.type, p.value]));
+  return { y: Number(parts.year), mo: Number(parts.month), d: Number(parts.day), h: Number(parts.hour) % 24, mi: Number(parts.minute), wd: DAYS[parts.weekday] };
+}
+function wall_show(ms, zone) {
+  const w = wall(ms, zone);
+  const two = (n) => String(n).padStart(2, "0");
+  return w.y + "-" + two(w.mo) + "-" + two(w.d) + " " + two(w.h) + ":" + two(w.mi);
+}
+function timer_when(t) {
+  const next = wall_show(Date.parse(t.at), t.zone) + " " + t.zone;
+  return t.cron === null ? "once, " + next : "cron " + t.cron + ", next " + next;
+}
+
 // web/src/Html.ts
 var ESC = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" };
 var TALL = 4000;
@@ -1450,6 +1487,12 @@ function tabs_html(tabs) {
   return tabs.map((tab) => {
     const here = tab.here ? ` class="here"` : "";
     return `<button${here}${act_html({ $: "Goto", name: tab.name })}>${esc(tab.text)}</button>`;
+  });
+}
+function timers_html(timers) {
+  return timers.map((t) => {
+    const cancel = `<button class="cancel"${act_html({ $: "Unschedule", id: t.id })}>Cancel</button>`;
+    return `<li data-id="${esc(t.id)}"><span class="when">${esc(timer_when(t))}</span><span class="text">${esc(t.text)}</span>${cancel}</li>`;
   });
 }
 function credit_html(app) {
@@ -2257,6 +2300,12 @@ function bars() {
   $(".net").hidden = v.up;
   $(".credits").hidden = credits === null;
   $(".credits").textContent = credits;
+  $(".timers").hidden = v.timers.length === 0;
+  $(".timers span").textContent = String(v.timers.length);
+  markup($("#timers ul"), timers_html(v.timers));
+  if (v.timers.length === 0 && $("#timers").matches(":popover-open")) {
+    $("#timers").hidePopover();
+  }
   document.body.classList.toggle("bills", v.bills);
   send.classList.toggle("stop", stop);
   send.disabled = !on;

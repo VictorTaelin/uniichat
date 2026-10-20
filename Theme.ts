@@ -55,15 +55,18 @@ export const FRAMED: Kind[] = ["user", "work"];
 
 // each tool's emoji, in both views; any other's is TOOL_ANY
 export const TOOL: Record<string, string> = {
-  zoom     : "🔍",
-  date     : "📅",
-  shell    : "⌨️",
-  read     : "📖",
-  write    : "📄",
-  edit     : "📝",
-  spawn    : "🤖",
-  tell     : "💬",
-  computer : "🖱️",
+  zoom       : "🔍",
+  date       : "📅",
+  shell      : "⌨️",
+  read       : "📖",
+  write      : "📄",
+  edit       : "📝",
+  spawn      : "🤖",
+  tell       : "💬",
+  computer   : "🖱️",
+  schedule   : "⏰",
+  schedules  : "⏰",
+  unschedule : "⏰",
 };
 export const TOOL_ANY = "🔧";
 

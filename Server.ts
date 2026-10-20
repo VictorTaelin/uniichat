@@ -25,7 +25,8 @@
 // going on where they started, fed straight to where the chat is (Main.away,
 // Main.far), and its views open again there at once (View.ts MOVE). It
 // ends once those calls do (a process that ran none, at once). A stop or
-// crash cuts all: a start resumes what ran (Chat.wake), told so.
+// crash cuts all: a start resumes what ran (Chat.wake), told so. A
+// chat's schedules come at their time, viewed or not (Chat.ring).
 //
 // Usage: Server.ts [port]   (127.0.0.1; default 8788)
 
@@ -44,6 +45,7 @@ import { JOBS, Memory, type Given, type Msg as Log, type Share } from "./Memory.
 import { OpenAI, TRANSCRIBER } from "./OpenAI.ts";
 import { Pick } from "./Pick.ts";
 import { Price } from "./Price.ts";
+import * as Timer from "./Timer.ts";
 import { MASTER, SEARCHES, Tools, type Agent, type Live, type Moved as Kit } from "./Tools.ts";
 import { email_ask, FRAME, IMAGES, live_push, MOVE, PING, QUIT, SUMMARIES, TICK, TURN, WIRE, type Answer, type Part, type Server as Out, type Wait } from "./View.ts";
 import * as config from "./Config.ts";
@@ -180,6 +182,15 @@ const BATCH      = "/import.json";
 // under SPARE free, the disk takes no more (Chat.post)
 const SPARE      = 2 ** 30;
 
+// a schedule's message as views get it (its head: Chat.state); a ring
+// that failed (a balance not read, a full disk, a write that threw)
+// tried again after RING ms; the longest the alarm waits before it looks
+// at the clock again (one set forward, or a machine woken, rings
+// schedules overdue)
+const TIMER_TEXT = 200;
+const RING       = 60000;
+const WAKE       = 60000;
+
 // the acts with a body (Chat.post)
 const BODIES     = ["say", "import", "voice"];
 
@@ -283,6 +294,7 @@ export namespace Chat {
       on     : (agent, ev) => Chat.on(chat, agent, ev),
       report : (agent, text, stopped) => Chat.report(chat, agent, text, stopped),
       change : () => Chat.change(chat),
+      timed  : () => Chat.timed(chat),
       pick   : () => chat.pick,
       halt   : () => chat.halt.signal,
     }, moved?.tools.key);
@@ -321,6 +333,7 @@ export namespace Chat {
       Chat.arrive(chat, moved, peer!);
     }
     Chat.chats.set(user.id, chat);
+    Chat.due_set(user.id, mem.timers);
     cloud.billing.balance(user.id).then(async () => {
       Memory.pump(mem);
       Chat.progress(chat);
@@ -951,13 +964,15 @@ export namespace Chat {
     return {};
   }
 
-  // the chats a restart cut at work or importing, opened; one that fails
-  // to load is logged and left (its user's page gets the error), never
-  // keeping the worker, which serves every other user, from starting
+  // the chats a restart cut at work or importing, opened, their account
+  // signed in or not (Chat.owner: a schedule's turn runs for one signed
+  // out everywhere); one that fails to load is logged and left (its
+  // user's page gets the error), never keeping the worker, which serves
+  // every other user, from starting
   export function wake(): void {
     const dir = config.DIR + "/users/";
     for (const id of fs.existsSync(dir) ? fs.readdirSync(dir) : []) {
-      const user = Main.shard(id) === Main.index ? Cloud.user(Chat.cloud, id) : null;
+      const user = Main.shard(id) === Main.index ? Chat.owner(id) : null;
       if (user !== null && ((Memory.saved(dir + id)?.work ?? []).length > 0 || fs.existsSync(dir + id + BATCH))) {
         Main.event("waking the chat of user " + id, () => Chat.open(user));
       }
@@ -973,6 +988,154 @@ export namespace Chat {
     const text = "The server restarted, cutting " + work.join(", ") + "; nothing was lost: go on.";
     const msg = Chat.push(chat, null, "note", text);
     await Promise.all(work.map((w) => (w === TURN ? Chat.take(chat, msg) : Tools.tell(chat.tools, w, text))));
+  }
+
+  // Timers
+  // ------
+  // A chat's schedules (Timer.ts) live in its view.json, so they move
+  // with it and outlive a restart. A worker keeps when each of its users'
+  // next is due (`due`: read from their files once it serves them,
+  // Chat.timers_read, then kept as chats open and schedules change), and
+  // one timer for the first, set at most WAKE ahead. Then it opens the
+  // chat of the account (signed in or not: Chat.owner; nobody need view
+  // it) and logs each schedule due as the timer's report "[Timer id]",
+  // taken as an agent's is; then each moves on to its next time, or ends,
+  // saved. Coming is an act (its id: the schedule's and its time),
+  // recorded with the message, so a crash before the save brings it
+  // again only to find it done: each time comes once. A worker giving
+  // its chats away rings none: the next one does, once it has the chat
+  // (Main.here). A time that passed while no server ran comes as the
+  // next starts, late, saying when it was due; a cron that passed many
+  // times comes once. Under SPARE free disk, or a write failing, they
+  // wait, tried again after RING.
+
+  export const due = new Map<string, number>();
+  let bell: ReturnType<typeof setTimeout> | undefined;
+
+  // a user's schedules as they are now: when due
+  export function due_set(user: string, timers: Timer.Timer[]): void {
+    if (timers.length === 0) {
+      Chat.due.delete(user);
+    } else {
+      Chat.due.set(user, Math.min(...timers.map((t) => Date.parse(t.at))));
+    }
+    Chat.alarm();
+  }
+
+  // the timer set for the first due, or WAKE from now if sooner
+  export function alarm(): void {
+    clearTimeout(bell);
+    if (Chat.due.size > 0) {
+      const first = Math.min(...Chat.due.values());
+      bell = setTimeout(() => Chat.ring(Date.now()), Math.min(WAKE, Math.max(0, first - Date.now())));
+    }
+  }
+
+  // a chat's schedules changed: the alarm and its views told
+  export function timed(chat: Chat): void {
+    if (Chat.chats.get(chat.acct.user) === chat) {
+      Chat.due_set(chat.acct.user, chat.mem.timers);
+    }
+    Chat.change(chat);
+  }
+
+  // the schedules of this worker's users, from their files
+  export function timers_read(): void {
+    const dir = config.DIR + "/users/";
+    for (const id of fs.existsSync(dir) ? fs.readdirSync(dir) : []) {
+      const timers = Main.shard(id) === Main.index && !Chat.chats.has(id) ? (Memory.saved(dir + id)?.timers ?? []) : [];
+      if (timers.length > 0) {
+        Chat.due.set(id, Math.min(...timers.map((t) => Date.parse(t.at))));
+      }
+    }
+    Chat.alarm();
+  }
+
+  // each user whose schedules are due by `now`: their chat opened, if
+  // they have an account, and those rung
+  export function ring(now: number): void {
+    if (Main.given) {
+      return;
+    }
+    for (const [user, at] of Chat.due) {
+      if (at <= now) {
+        Chat.due.delete(user);
+        Chat.rung(user, now).catch((err) => {
+          console.error("unii: the schedules of user " + user + ": " + (err?.message ?? err));
+          Chat.retry(user);
+        });
+      }
+    }
+    Chat.alarm();
+  }
+
+  export async function rung(id: string, now: number): Promise<void> {
+    await Main.here(id);
+    await Chat.cloud.billing.balance(id);
+    Main.event("the schedules of user " + id, () => {
+      const user = Main.given ? null : Chat.owner(id);
+      const chat = user === null ? null : Chat.open(user);
+      if (chat !== null) {
+        Chat.due.delete(id);
+        Chat.fire(chat, now);
+      }
+    }, () => Chat.retry(id));
+  }
+
+  // a user's schedules that failed, tried again after RING
+  export function retry(user: string): void {
+    Chat.due.set(user, Date.now() + RING);
+    Chat.alarm();
+  }
+
+  // the account a chat is of, signed in anywhere or not: as its session
+  // names it, else by its chat's files, which live as long as it does
+  // (Main.close); null: none
+  export function owner(id: string): User | null {
+    return Cloud.user(Chat.cloud, id) ?? (fs.existsSync(config.DIR + "/users/" + id + "/view.json") ? { id, name: id } : null);
+  }
+
+  // the schedules due by `now` (or by when the chat's logging lets them:
+  // Chat.hold) come, each once, as the timer's reports, taken as
+  // reports are; then each moves on, saved. Under SPARE free, or a
+  // write throwing, they are tried again (Chat.retry)
+  export function fire(chat: Chat, now: number): void {
+    chat.posts += 1;
+    Chat.hold(chat, () => {
+      const mem = chat.mem;
+      const user = chat.acct.user;
+      const at = Math.max(now, Date.now());
+      const dues = mem.timers.filter((t) => Date.parse(t.at) <= at);
+      try {
+        if (Chat.chats.get(user) === chat && dues.length > 0 && Chat.full()) {
+          console.error("unii: the schedules of user " + user + " wait: " + FULL);
+          Chat.retry(user);
+        } else if (Chat.chats.get(user) === chat) {
+          if (dues.length > 0) {
+            const fresh = dues.filter((t) => Cloud.act_get(chat.acct, "timer " + t.id + " " + t.at) === null);
+            const msgs = fresh.map((t) => Chat.push(chat, null, "work", Timer.timer_say(t, at), [], false, "timer " + t.id + " " + t.at));
+            mem.timers = mem.timers.flatMap((t) => (dues.includes(t) ? (Timer.timer_after(t, at) ?? []) : [t]));
+            Memory.save(mem);
+            if (Chat.cloud.billing.refuse(user, 0) === null) {
+              msgs.forEach((msg) => Chat.take(chat, msg));
+            }
+          }
+          Chat.due_set(user, mem.timers);
+        }
+      } catch (err: any) {
+        console.error("unii: the schedules of user " + user + " failed: " + (err?.stack ?? err));
+        Chat.retry(user);
+      } finally {
+        chat.posts -= 1;
+        Chat.change(chat);
+      }
+    });
+  }
+
+  // under SPARE free, the disk takes no more (Chat.post, Chat.fire)
+  export function full(): boolean {
+    const disk = fs.statfsSync(config.DIR);
+    return disk.bavail * disk.bsize < SPARE;
   }
 
   // Moving
@@ -1066,7 +1229,8 @@ export namespace Chat {
     const why = chat.mem.hold[1];
     const importing = batch && { done: batch.all - Chat.time(batch), total: batch.all, spent: batch.spent, left: batch.left / 1e6, why, msgs: batch.b - batch.a, open: batch.open };
     const billing = Chat.cloud.billing;
-    return { $: "state", busy: chat.busy, wait: Chat.waits(chat), agents, pick: chat.pick, ...config.OFFER, bills: billing.bills, credits: billing.credits(chat.acct.user), importing };
+    const timers = chat.mem.timers.map((t) => ({ ...t, text: t.text.length > TIMER_TEXT ? t.text.slice(0, TIMER_TEXT) + "…" : t.text }));
+    return { $: "state", busy: chat.busy, wait: Chat.waits(chat), agents, pick: chat.pick, ...config.OFFER, bills: billing.bills, credits: billing.credits(chat.acct.user), importing, timers };
   }
 
   export function waits(chat: Chat): Wait {
@@ -1264,6 +1428,13 @@ export namespace Chat {
         Tools.done(chat.tools, device, String(msg.job), msg.out);
         return {};
       }
+      case "unschedule": {
+        const id = String(msg.id);
+        if (Tools.unschedule(chat.tools, id)) {
+          Chat.note(chat, "Schedule " + id + " cancelled by the user.");
+        }
+        return {};
+      }
     }
     return { error: "No act " + msg.$ + "." };
   }
@@ -1273,8 +1444,7 @@ export namespace Chat {
   // billing, asked again after a balance read (a top-up lands there). Else
   // its body goes to a file unlinked once open, then its act is done
   export async function post(chat: Chat, id: string, msg: any): Promise<Answer> {
-    const disk = fs.statfsSync(config.DIR);
-    if (disk.bavail * disk.bsize < SPARE) {
+    if (Chat.full()) {
       return { error: FULL, status: 507 };
     }
     const billing = Chat.cloud.billing;
@@ -1667,6 +1837,7 @@ export namespace Main {
     const hand = HAND + Main.index;
     Main.port = port;
     Chat.cloud = Cloud.open(change, signed, post);
+    Main.listed.promise.then(Chat.timers_read).catch((err) => console.error("unii: reading the schedules failed: " + (err?.stack ?? err)));
     Main.back = await Main.dial(hand);
     if (Main.back === null) {
       Main.listed.resolve();

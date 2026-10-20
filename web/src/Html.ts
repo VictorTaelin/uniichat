@@ -9,6 +9,7 @@
 import * as Call from "../../Call.ts";
 import * as Md from "../../Md.ts";
 import * as Theme from "../../Theme.ts";
+import * as Timer from "../../Timer.ts";
 import * as View from "../../View.ts";
 
 // Constants
@@ -116,6 +117,15 @@ export function tabs_html(tabs: View.Tab[]): string[] {
   return tabs.map((tab) => {
     const here = tab.here ? ` class="here"` : "";
     return `<button${here}${act_html({ $: "Goto", name: tab.name })}>${esc(tab.text)}</button>`;
+  });
+}
+
+// the chat's schedules (the header's ⏰): each one's time, message and
+// Cancel
+export function timers_html(timers: Timer.Timer[]): string[] {
+  return timers.map((t) => {
+    const cancel = `<button class="cancel"${act_html({ $: "Unschedule", id: t.id })}>Cancel</button>`;
+    return `<li data-id="${esc(t.id)}"><span class="when">${esc(Timer.timer_when(t))}</span><span class="text">${esc(t.text)}</span>${cancel}</li>`;
   });
 }
 

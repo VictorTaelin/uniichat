@@ -23,6 +23,7 @@
   <button class="brand" data-go="/" data-act='{"$":"Goto","name":null}'><i class="mark"></i><span>UniiChat</span></button>
   <span class="net">offline</span>
   <button class="imping" popovertarget="import" hidden><span></span><progress max="1" value="0"></progress></button>
+  <button class="timers" popovertarget="timers" title="Schedules" hidden>⏰ <span></span></button>
   <button class="credits" data-go="/account"></button>
   <button class="menu" popovertarget="menu">☰</button>
 </header>
@@ -43,6 +44,11 @@
 <!-- out of credit: what was refused, then credit to add (Html.credit_html) -->
 <div id="wallet" popover>
   <p class="title"></p>
+</div>
+<!-- the chat's schedules, set by Unii's schedule tool (Timer.ts) -->
+<div id="timers" popover>
+  <p class="title">Schedules</p>
+  <ul></ul>
 </div>
 <div id="menu" popover>
   <button data-go="/account">Account</button>

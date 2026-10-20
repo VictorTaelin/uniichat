@@ -14,6 +14,8 @@
 // An agent (subagent or computer task) has a name and a log; each call
 // gets its context and its whole log, so a told agent goes on even after
 // a restart; its replies reach the chat as one "[Name]" message.
+// The master's schedules (schedule, schedules, unschedule) are kept with
+// its chat, each coming as a "[Timer id]" message (Timer.ts).
 // A chat moves to another process whole (Tools.give, Tools.take): its
 // key, devices and jobs, and its agents at work, whose calls run on where
 // they started; MCP requests reaching this one then go on there, those
@@ -32,6 +34,7 @@ import { COMPUTER, INT, STR, TOOLS, spec, type Job, type Spec } from "./Machine.
 import { Memory } from "./Memory.ts";
 import PROMPT from "./prompt.txt" with { type: "text" };
 import { EFFORTS, Pick } from "./Pick.ts";
+import * as Timer from "./Timer.ts";
 import type { Live } from "./View.ts";
 
 export type { Live };
@@ -75,12 +78,14 @@ export type Moved = {
 };
 
 // what the server does for agents (report: work stopped stays unanswered;
-// pick: the chat's pick; halt: what stops its turn)
+// pick: the chat's pick; halt: what stops its turn), and as the chat's
+// schedules change (timed)
 type Hooks = {
   push   : (agent: Agent, kind: Kind, text: string) => void;
   on     : (agent: Agent, ev: Event) => void;
   report : (agent: Agent, text: string, stopped: boolean) => void;
   change : () => void;
+  timed  : () => void;
   pick   : () => Pick;
   halt   : () => AbortSignal;
 };
@@ -155,7 +160,8 @@ const VIEW_DOC = `The view: the whole chat between Unii and the user, oldest fir
 A summary tags each item with its kind: user (the user's words), unii
 (Unii's replies), tool (Unii's tool calls), echo (their results), note
 (memories from before this chat), or work (the report of an agent, a
-subagent or a computer task, starting "[Name]"). A short message is its own line, word for word. Recent lines
+subagent or a computer task, starting "[Name]", or a scheduled message
+from the timer, starting "[Timer id]"). A short message is its own line, word for word. Recent lines
 cover one message each; the older the messages, the more a line covers.
 A message not summarized yet shows as "(not summarized yet: zoom it)".
 No message appears in full, not even the last ones. A text too long for
@@ -199,6 +205,14 @@ const OWN: Spec[] = [
 const BOSS: Spec[] = [
   spec("spawn", "Start one subagent per task, in parallel, and return their names at once. Each one's report reaches you as a message \"[Name] report\" when it finishes. A subagent sees the view and the user's instructions, but knows what you want only from its task.", { tasks: { type: "array", items: STR }, effort: { type: "string", enum: EFFORTS, description: "How hard they think; by default, as hard as you." } }, ["tasks"]),
   spec("tell", "Send a message to an agent (a subagent or a computer task), by name. One at work reads it between its tool calls, and its report answers it; an idle one goes on from its chat, and its reply reaches you as a message \"[Name] reply\".", { name: STR, message: STR }, ["name", "message"]),
+  spec("schedule", "Schedule a message to yourself: at its time it reaches you as a message \"[Timer id]\" from the timer, not the user, starting a turn as a report does, whether or not the user is online. Give `at` to send it once, or `cron` to send it again and again, and the time zone both are read in (the user's). Write the message as the task to do then, whole: by then this turn is far back in the view.", {
+    message : STR,
+    at      : { type: "string", description: "Once: YYYY-MM-DD HH:MM, in zone." },
+    cron    : { type: "string", description: "Again and again: minute hour day month weekday, as cron, in zone (\"0 8 * * mon-fri\": weekdays at 08:00); its times at least 5 minutes apart." },
+    zone    : { type: "string", description: "An IANA time zone, such as Europe/Amsterdam or UTC." },
+  }, ["message", "zone"]),
+  spec("schedules", "List the chat's schedules: id, when each comes next, its message.", {}, []),
+  spec("unschedule", "Cancel a schedule, by its id.", { id: STR }, ["id"]),
 ];
 const DEVICE = { device: { type: "string", description: "The name of the device to run on, one listed under Devices." } };
 function kit(who: string): Spec[] {
@@ -367,6 +381,17 @@ export namespace Tools {
       case "tell": {
         return { text: await Tools.tell(tools, String(args.name), String(args.message)), fail: false };
       }
+      case "schedule": {
+        return Tools.schedule(tools, Timer.timer_new(args, Date.now()));
+      }
+      case "schedules": {
+        const lines = mem.timers.map(Timer.timer_line);
+        return { text: lines.length === 0 ? "No schedules." : lines.join("\n"), fail: false };
+      }
+      case "unschedule": {
+        const id = String(args.id);
+        return Tools.unschedule(tools, id) ? { text: "Cancelled " + id + ".", fail: false } : { text: "No schedule " + id + ".", fail: true };
+      }
       case "computer": {
         const role = tools.agents.get(who)?.role;
         if (role?.$ === "hands") {
@@ -379,6 +404,37 @@ export namespace Tools {
         return Tools.job(tools, String(device), { name, input, cwd: who }, signal, id);
       }
     }
+  }
+
+  // Schedules
+  // ---------
+
+  // a schedule kept with the chat; else why not
+  export function schedule(tools: Tools, timer: Timer.Timer | string): Out {
+    const mem = tools.mem;
+    if (typeof timer !== "string" && mem.timers.length >= Timer.TIMERS) {
+      timer = "The chat has " + Timer.TIMERS + " schedules, the most it keeps: cancel one first.";
+    }
+    if (typeof timer === "string") {
+      return { text: timer, fail: true };
+    }
+    mem.timers = [...mem.timers, timer];
+    Memory.save(mem);
+    tools.hooks.timed();
+    return { text: "Scheduled " + timer.id + ": " + Timer.timer_when(timer) + ".", fail: false };
+  }
+
+  // false: none such
+  export function unschedule(tools: Tools, id: string): boolean {
+    const mem = tools.mem;
+    const left = mem.timers.filter((t) => t.id !== id);
+    if (left.length === mem.timers.length) {
+      return false;
+    }
+    mem.timers = left;
+    Memory.save(mem);
+    tools.hooks.timed();
+    return true;
   }
 
   // Devices

@@ -907,6 +907,12 @@ function bars(): void {
   $(".net").hidden = v.up;
   $(".credits").hidden = credits === null;
   $(".credits").textContent = credits;
+  $(".timers").hidden = v.timers.length === 0;
+  $(".timers span").textContent = String(v.timers.length);
+  markup($("#timers ul"), Html.timers_html(v.timers));
+  if (v.timers.length === 0 && $("#timers").matches(":popover-open")) {
+    $("#timers").hidePopover();
+  }
   document.body.classList.toggle("bills", v.bills);
   send.classList.toggle("stop", stop);
   send.disabled = !on;
