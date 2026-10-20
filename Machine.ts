@@ -28,6 +28,9 @@ export type Job = { name: string; input: any; cwd: string };
 // JSON Schema
 export type Spec = { name: string; info: string; schema: object };
 
+// a skill on a device: its name, what it is for, its folder
+export type Skill = { name: string; description: string; dir: string };
+
 // a line of a diff: kept in both texts (" "), only in the old ("-"), only
 // in the new ("+")
 type Op = { s: " " | "-" | "+"; x: string };
@@ -143,6 +146,12 @@ export namespace Machine {
         }
         case "computer": {
           return await Computer.act(input, signal);
+        }
+        case "skills": {
+          return { text: JSON.stringify(Machine.skills(os.homedir(), cwd)), fail: false };
+        }
+        case "skill": {
+          return Machine.skill(os.homedir(), cwd, String(input.name));
         }
         default: {
           return { text: "No tool " + job.name + ".", fail: true };
@@ -295,6 +304,43 @@ export namespace Machine {
     return { text: diffs.join("\n"), fail: false };
   }
 
+  // Skills
+  // ------
+
+  // Agent Skills (<name>/SKILL.md) in ~/.agents/skills, then in
+  // <dir>/.agents/skills: a name found twice keeps the user's; one that
+  // can't be read or lacks a valid name and description is left out
+  export function skills(home: string, dir: string): Skill[] {
+    const found = new Map<string, Skill>();
+    for (const root of [home + "/.agents/skills", dir + "/.agents/skills"]) {
+      let names: string[] = [];
+      try {
+        names = fs.readdirSync(root).sort();
+      } catch {}
+      for (const name of names) {
+        const file = path.join(root, name, "SKILL.md");
+        let head: any = null;
+        try {
+          head = skill_head(file);
+        } catch {}
+        const ok = typeof head?.name === "string" && /^[a-z0-9-]{1,64}$/.test(head.name) && typeof head.description === "string" && head.description.trim() !== "";
+        if (ok && !found.has(head.name)) {
+          found.set(head.name, { name: head.name, description: head.description.trim().slice(0, 1024), dir: path.dirname(file) });
+        }
+      }
+    }
+    return [...found.values()];
+  }
+
+  export function skill(home: string, dir: string, name: string): Out {
+    const skill = Machine.skills(home, dir).find((s) => s.name === name);
+    if (skill === undefined) {
+      return { text: "No skill " + name + " here.", fail: true };
+    }
+    const text = fs.readFileSync(skill.dir + "/SKILL.md", "utf8");
+    return { text: "Skill " + name + ", in " + skill.dir + " (its other files are there):\n\n" + text, fail: false };
+  }
+
   // ms, or till the signal aborts: none, if it already did (an abort
   // event comes once)
   export function nap(ms: number, signal: AbortSignal): Promise<void> {
@@ -307,6 +353,24 @@ export namespace Machine {
     });
   }
 
+}
+
+// Frontmatter
+// ===========
+
+// a SKILL.md's YAML frontmatter, from its first 64 KB; a regular file only,
+// so a FIFO or device can't hang the terminal
+function skill_head(file: string): any {
+  if (!fs.statSync(file).isFile()) {
+    return null;
+  }
+  const buf = Buffer.alloc(65536);
+  const fd = fs.openSync(file, "r");
+  const size = fs.readSync(fd, buf, 0, buf.length, 0);
+  fs.closeSync(fd);
+  const text = buf.toString("utf8", 0, size).replace(/^\uFEFF/, "");
+  const m = text.match(/^---\r?\n([\s\S]*?)\r?\n---\r?(\n|$)/);
+  return m === null ? null : Bun.YAML.parse(m[1]);
 }
 
 // Diff

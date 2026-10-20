@@ -10,7 +10,9 @@
 // reaches another. A device's terminals are its views' tabs: one whose
 // link is lost stays, its jobs waiting, until it quits. It is told its
 // jobs' ids as they change, and each job new to it; a job's output is an
-// act (Server.ts).
+// act (Server.ts). A device's skills (Machine.skills), read as a job when
+// it joins and as each turn starts, are listed in each call's message
+// while it is open; the skill tool loads one, as a job too.
 // An agent (subagent or computer task) has a name and a log; each call
 // gets its context and its whole log, so a told agent goes on even after
 // a restart; its replies reach the chat as one "[Name]" message.
@@ -28,7 +30,7 @@ import type { Out } from "./Agent.ts";
 import { report_text } from "./Call.ts";
 import { clip_page } from "./Clip.ts";
 import * as config from "./Config.ts";
-import { COMPUTER, INT, STR, TOOLS, spec, type Job, type Spec } from "./Machine.ts";
+import { COMPUTER, INT, STR, TOOLS, spec, type Job, type Skill, type Spec } from "./Machine.ts";
 import { Memory } from "./Memory.ts";
 import PROMPT from "./prompt.txt" with { type: "text" };
 import { EFFORTS, Pick } from "./Pick.ts";
@@ -40,11 +42,12 @@ export type { Live };
 // =====
 
 // a device: its sign-in (a session's hash), terminals by tab (none:
-// closed), and jobs by id
+// closed), jobs by id, and its skills as last looked at (Tools.look)
 type Device = {
-  who   : string;
-  terms : Map<string, Link>;
-  jobs  : Map<string, Running>;
+  who    : string;
+  terms  : Map<string, Link>;
+  jobs   : Map<string, Running>;
+  skills : Skill[];
 };
 
 // a job: the terminal it runs on, what it runs, its output, what ends it
@@ -186,6 +189,12 @@ it, and leaves the list when they close it: a task that needs one not
 listed can't be done now, so tell the user it isn't available.`;
 const DEVICES_NONE = "(None is open now.)";
 
+const SKILLS = "Skills on the devices open now, by device: when a task matches one's description, load it with the skill tool first, then follow it.";
+
+// how long a device may take to list its skills, in ms: one that takes
+// longer keeps those it listed last
+const LOOK = 3000;
+
 // a subagent's prompt: its part, then the view's and the devices' docs
 const SUB = SUB_HEAD + "\n\n" + VIEW_DOC + "\n\n" + DEVICES;
 
@@ -208,6 +217,7 @@ function kit(who: string): Spec[] {
     return spec(t.name, info, { ...DEVICE, ...schema.properties }, ["device", ...schema.required]);
   });
 }
+const SKILL: Spec = spec("skill", "Load a skill listed under Skills: its SKILL.md, with the folder its other files are in on that device (read or run them there with your other tools).", { ...DEVICE, name: STR }, ["device", "name"]);
 const HAND: Spec = spec("computer", "Start a task on the screen of a device marked \"computer use\", done with its mouse and keyboard by an agent that sees screenshots, and return its name at once. Its report reaches you as a message \"[Name] report\". It knows only the task, so say all it needs. One at a time on each device.", { ...DEVICE, task: STR }, ["device", "task"]);
 
 // Tools
@@ -254,6 +264,39 @@ export namespace Tools {
     const line = ([name, d]: [string, Device]) => "- " + name + (Tools.hands(d) ? " (computer use)" : "") + ", work dir " + work(d);
     const lines = Tools.opened(tools).map(line);
     return { text: "Devices open now:\n" + (lines.length === 0 ? DEVICES_NONE : lines.join("\n")) + "\n\n", mark: false };
+  }
+
+  // after the devices, so a change hits a call's tail, not its cached
+  // prefix
+  export function skills(tools: Tools): Block {
+    const lines = Tools.opened(tools).flatMap(([name, d]) => d.skills.map((s) => "- " + name + ": " + s.name + ": " + s.description.replace(/\s+/g, " ")));
+    return { text: lines.length === 0 ? "" : SKILLS + "\n" + lines.join("\n") + "\n\n", mark: false };
+  }
+
+  // each open device's skills, asked as a job; one that fails (a unii
+  // from before skills) has none
+  export async function look(tools: Tools, only: string | null = null): Promise<void> {
+    const live = Tools.opened(tools).filter(([name, d]) => (only === null || name === only) && [...d.terms.values()].some((t) => t.live()));
+    await Promise.all(live.map(async ([name, d]) => {
+      const run = Tools.start_job(tools, name, { name: "skills", input: {}, cwd: "main" }, crypto.randomUUID());
+      if (typeof run === "string") {
+        return;
+      }
+      let late = false;
+      const timer = setTimeout(() => {
+        late = true;
+        run.end({ text: "Late.", fail: true });
+      }, LOOK);
+      const out = await run.out;
+      clearTimeout(timer);
+      if (!late) {
+        try {
+          d.skills = out.fail ? [] : JSON.parse(out.text);
+        } catch {
+          d.skills = [];
+        }
+      }
+    }));
   }
 
   // the master's agents at work now, at the start of each of its calls'
@@ -335,9 +378,9 @@ export namespace Tools {
 
   export function list(tools: Tools, who: string): Spec[] {
     if (who === "main") {
-      return [...OWN, ...BOSS, ...kit(who), HAND];
+      return [...OWN, ...BOSS, ...kit(who), SKILL, HAND];
     }
-    return tools.agents.get(who)?.role.$ === "hands" ? [COMPUTER] : [...OWN, ...kit(who)];
+    return tools.agents.get(who)?.role.$ === "hands" ? [COMPUTER] : [...OWN, ...kit(who), SKILL];
   }
 
   // id: a job's, if it starts one
@@ -374,6 +417,9 @@ export namespace Tools {
         }
         return Tools.computer(tools, String(args.device), String(args.task));
       }
+      case "skill": {
+        return Tools.job(tools, String(args.device), { name, input: { name: String(args.name) }, cwd: "main" }, signal, id);
+      }
       default: {
         const { device, ...input } = args;
         return Tools.job(tools, String(device), { name, input, cwd: who }, signal, id);
@@ -391,10 +437,11 @@ export namespace Tools {
     for (let k = 2; (tools.devices.get(name)?.who ?? who) !== who; k++) {
       name = host + "-" + k;
     }
-    const d = tools.devices.get(name) ?? { who, terms: new Map(), jobs: new Map() };
+    const d = tools.devices.get(name) ?? { who, terms: new Map(), jobs: new Map(), skills: [] };
     d.terms.set(term, link);
     tools.devices.set(name, d);
     Tools.sync(d, term, () => true);
+    Tools.look(tools, name);
     return name;
   }
 
@@ -587,7 +634,7 @@ export namespace Tools {
     switch (role.$) {
       case "sub": {
         const system = Tools.system(SUB);
-        const blocks = [...agent.view, Tools.devices(tools), log];
+        const blocks = [...agent.view, Tools.devices(tools), Tools.skills(tools), log];
         const effort = role.effort ?? run.effort;
         return { ...run, effort, system, blocks, searches: SEARCHES, server, bill };
       }
@@ -631,7 +678,7 @@ export namespace Tools {
   // a chat's tools come here (Tools.give): `far` makes the call of id
   export function take(tools: Tools, moved: Moved, far: (id: string, on: (ev: Event) => void, bill?: Bill) => Call): void {
     for (const [name, who, jobs] of moved.devices) {
-      const d: Device = { who, terms: new Map(), jobs: new Map() };
+      const d: Device = { who, terms: new Map(), jobs: new Map(), skills: [] };
       jobs.forEach(([id, term, job]) => Tools.track(d, id, term, job));
       tools.devices.set(name, d);
     }

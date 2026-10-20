@@ -530,6 +530,10 @@ export namespace Chat {
     const mem = chat.mem;
     const halt = (chat.halt = new AbortController());
     Chat.change(chat);
+    await Tools.look(chat.tools);
+    if (halt.signal.aborted) {
+      return false;
+    }
     let from = -1;
     while (from !== Chat.from(chat)) {
       from = Chat.from(chat);
@@ -550,7 +554,7 @@ export namespace Chat {
     chat.eye = Chat.eye(mem, from);
     chat.socks.forEach((sock) => Chat.show(chat, sock));
     const bill = mem.pay?.("chat", String(msgs[0].id));
-    const blocks = [...view, Tools.devices(chat.tools), Tools.at_work(chat.tools), { text: HEAD + text, mark: true }];
+    const blocks = [...view, Tools.devices(chat.tools), Tools.skills(chat.tools), Tools.at_work(chat.tools), { text: HEAD + text, mark: true }];
     const ask = { ...Chat.share(chat), searches: SEARCHES, server, blocks, imgs, bill };
     chat.model = chat.pick.model;
     chat.asked = true;

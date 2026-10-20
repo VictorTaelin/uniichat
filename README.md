@@ -115,7 +115,9 @@ which installs the released `unii` executable. `unii` alone opens
 uniichat.com; `unii <url>` opens any server. Run with
 `UNII_COMPUTER=1` on a Mac, the agent may use its screen (it compiles
 Computer.swift with swiftc; macOS asks for Screen Recording and
-Accessibility).
+Accessibility). [Agent Skills](https://agentskills.io) in
+`~/.agents/skills` or `<work>/main/.agents/skills` where `unii` runs are
+offered to the agent.
 
 Telemetry: once a day the `unii` terminal asks bend-lang.com's /check
 for the latest version (Term.ts update_check), sending its version, OS
