@@ -117,6 +117,10 @@ uniichat.com; `unii <url>` opens any server. Run with
 Computer.swift with swiftc; macOS asks for Screen Recording and
 Accessibility).
 
+On Windows without WSL, build `unii.exe` (`bun build --compile
+--target=bun-windows-x64 Term.ts --outfile unii.exe`) and run `unii.exe
+<url>` in PowerShell; its shell tool runs PowerShell (pwsh, else powershell.exe).
+
 Telemetry: once a day the `unii` terminal asks bend-lang.com's /check
 for the latest version (Term.ts update_check), sending its version, OS
 and CPU type, no account and no id; it also says whether this computer

@@ -224,6 +224,9 @@ function screen_press(scr: Screen, key: string): void {
 // stops the process (Ctrl+Z), the terminal as it found it; continued
 // (fg), the screen's modes again, and the footer drawn anew
 export function screen_suspend(scr: Screen): void {
+  if (process.platform === "win32") {
+    return; // no job control
+  }
   process.stdout.write(screen_erase(scr) + MODES_OFF);
   scr.up   = 0;
   scr.rows = 0;

@@ -38,7 +38,12 @@ type Box = [number, number, number, number];
 // Constants
 // =========
 
-const SHELL = process.env.SHELL ?? "/bin/sh";
+// on Windows, PowerShell (pwsh, else Windows PowerShell): its output in
+// UTF-8, without progress bars, its stderr read with stdout (PowerShell's
+// `2>&1` wraps a program's stderr lines as errors)
+export const WIN = process.platform === "win32";
+const SHELL = WIN ? Bun.which("pwsh") ?? "powershell.exe" : process.env.SHELL ?? "/bin/sh";
+const PWSH  = "$ProgressPreference = 'SilentlyContinue'; $OutputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); ";
 
 // this unii's mark, set as UNII_RUN on every process its shells start
 // (each child inherits it), and how to list this user's processes with
@@ -161,32 +166,38 @@ export namespace Machine {
   export async function shell(cwd: string, command: string, signal: AbortSignal): Promise<Out> {
     SHELLS.forEach((p) => Machine.group(p) || SHELLS.delete(p));
     const start = performance.now();
-    const proc = Bun.spawn([SHELL, "-c", "exec 2>&1\n" + command], {
-      cwd      : cwd,
-      env      : { ...process.env, UNII_RUN: RUN },
-      stdin    : "ignore",
-      stdout   : "pipe",
-      stderr   : "ignore",
-      detached : true,
+    const argv = WIN ? [SHELL, "-NoProfile", "-NonInteractive", "-Command", PWSH + command] : [SHELL, "-c", "exec 2>&1\n" + command];
+    const proc = Bun.spawn(argv, {
+      cwd         : cwd,
+      env         : { ...process.env, UNII_RUN: RUN },
+      stdin       : "ignore",
+      stdout      : "pipe",
+      stderr      : WIN ? "pipe" : "ignore",
+      detached    : !WIN,
+      windowsHide : true,
     });
     const out = clip();
     SHELLS.add(proc);
-    const reader = proc.stdout.pipeThrough(new TextDecoderStream()).getReader();
+    const readers = [proc.stdout, ...(WIN ? [proc.stderr as typeof proc.stdout] : [])].map((s) => s.pipeThrough(new TextDecoderStream()).getReader());
     const kill = () => {
-      Machine.kill(-proc.pid);
-      reader.cancel().catch(() => {});
+      if (!WIN || Machine.group(proc)) {
+        Machine.kill(-proc.pid);
+      }
+      readers.forEach((r) => r.cancel().catch(() => {}));
     };
     signal.addEventListener("abort", kill, { once: true });
-    try {
-      for (let got = await reader.read(); !got.done; got = await reader.read()) {
-        out.add(got.value);
-      }
-    } catch {}
+    await Promise.all(readers.map(async (reader) => {
+      try {
+        for (let got = await reader.read(); !got.done; got = await reader.read()) {
+          out.add(got.value);
+        }
+      } catch {}
+    }));
     signal.removeEventListener("abort", kill);
     const code = await proc.exited;
     const time = ((performance.now() - start) / 1000).toFixed(1) + " s";
     const exit = signal.aborted ? "stopped" : proc.signalCode ? "killed by " + proc.signalCode : "exit " + code;
-    const text = out.text().replace(/\n$/, "");
+    const text = (WIN ? out.text().replace(/\r\n/g, "\n") : out.text()).replace(/\n$/, "");
     return { text: (text === "" ? "" : text + "\n") + "(" + exit + " in " + time + ")", fail: exit !== "exit 0" };
   }
 
@@ -195,7 +206,8 @@ export namespace Machine {
   // has one
   export function group(proc: Bun.Subprocess): boolean {
     const ended = proc.exitCode !== null || proc.signalCode !== null;
-    return !ended || (!Machine.alive(proc.pid) && Machine.alive(-proc.pid));
+    // Windows has no groups, and an ended shell's id may be reused
+    return !ended || (!WIN && !Machine.alive(proc.pid) && Machine.alive(-proc.pid));
   }
 
   // whether a process (pid) or a process group (-pid) exists
@@ -208,9 +220,14 @@ export namespace Machine {
     }
   }
 
+  // a process, or a group (-pid); on Windows, a process and its tree
   export function kill(pid: number): void {
     try {
-      process.kill(pid, "SIGKILL");
+      if (WIN) {
+        Bun.spawnSync(["taskkill", "/T", "/F", "/PID", String(Math.abs(pid))], { windowsHide: true });
+      } else {
+        process.kill(pid, "SIGKILL");
+      }
     } catch {}
   }
 
@@ -222,6 +239,9 @@ export namespace Machine {
       if (Machine.group(proc)) {
         Machine.kill(-proc.pid);
       }
+    }
+    if (WIN) {
+      return; // no ps: a process that left its shell's tree lives on
     }
     const ps = Bun.spawnSync(PS).stdout.toString();
     for (const line of ps.split("\n")) {

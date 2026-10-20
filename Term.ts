@@ -22,7 +22,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import type { Kind } from "./AskAI.ts";
 import * as Import from "./Import.ts";
-import { Machine, type Job } from "./Machine.ts";
+import { Machine, WIN, type Job } from "./Machine.ts";
 import * as Paint from "./Paint.ts";
 import { type Move, Pick } from "./Pick.ts";
 import * as Screen from "./Screen.ts";
@@ -79,7 +79,8 @@ const ODD    = ARGS.find((a) => !WORDS.includes(a) && !WEB.test(a) && a !== PORT
 const HOME   = process.env.UNII_HOME || os.homedir() + "/.unii";
 const OURS   = "https://uniichat.com";
 const SERVER = (ARGS.find((a) => WEB.test(a)) ?? process.env.UNII_URL ?? OURS).replace(/\/$/, "");
-const TOKEN  = HOME + "/" + new URL(SERVER).host + "/token";
+const HOST   = new URL(SERVER).host;
+const TOKEN  = HOME + "/" + (WIN ? HOST.replaceAll(":", "_") : HOST) + "/token"; // no ":" in a Windows name
 
 const USAGE = `Usage: unii [url]           the chat (url: $UNII_URL, else https://uniichat.com)
        unii login [url]     sign in
@@ -238,7 +239,7 @@ function term_new(url: string): Term {
 
 // connects, by View's link, naming this device
 function term_connect(t: Term): void {
-  const dev = "&device=" + encodeURIComponent(DEVICE) + "&computer=" + (COMPUTER ? 1 : 0) + "&work=" + encodeURIComponent(WORK);
+  const dev = "&device=" + encodeURIComponent(DEVICE) + "&computer=" + (COMPUTER ? 1 : 0) + "&work=" + encodeURIComponent(WORK) + (WIN ? "&shell=PowerShell" : "");
   View.link_open(t.v, {
     open : (query) => new WebSocket(t.url.replace(/^http/, "ws") + "/ws" + query + dev, { headers: term_auth() } as any),
     post : (path, body) => fetch(t.url + path, { method: "POST", headers: term_auth(), body }),
@@ -598,7 +599,7 @@ async function term_import(t: Term, arg: string): Promise<void> {
 
 // a dir's sessions (none if it is missing), a file at a time
 async function term_sessions(dir: string): Promise<Import.Session[]> {
-  const files = fs.existsSync(dir) ? fs.readdirSync(dir, { recursive: true }).map((f) => dir + "/" + f).filter(Import.import_file) : [];
+  const files = fs.existsSync(dir) ? fs.readdirSync(dir, { recursive: true }).map((f) => dir + "/" + (WIN ? String(f).replaceAll("\\", "/") : f)).filter(Import.import_file) : [];
   const found: Import.Session[] = [];
   for (const f of files) {
     found.push(...[await Import.import_session(Bun.file(f), "log")].filter((s) => s !== null));
@@ -1080,6 +1081,11 @@ function update_newer(ver: string): boolean {
 // runs the installer again: the one way unii changes. The command prints
 // first, so one can run it alone.
 function update_run(url: string): void {
+  if (WIN) {
+    console.error("On Windows, build unii.exe again from the source (README).");
+    process.exitCode = 1;
+    return;
+  }
   const cmd = "curl -fsSL " + url + "/install.sh | sh";
   console.error(cmd);
   process.exitCode = child.spawnSync("sh", ["-c", cmd], { stdio: "inherit" }).status ?? 1;

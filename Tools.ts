@@ -51,8 +51,8 @@ type Device = {
 type Running = { term: string; job: Job; out: Promise<Out>; end: (out: Out) => void };
 
 // a terminal: how to reach it, whether its socket is open now, whether it
-// does computer use, its work dir
-export type Link = { send: (msg: object) => void; live: () => boolean; computer: boolean; work: string };
+// does computer use, its work dir, its shell if not a POSIX one
+export type Link = { send: (msg: object) => void; live: () => boolean; computer: boolean; work: string; shell: string | null };
 
 // at work, the view its calls get and its replies so far
 export type Agent = {
@@ -250,8 +250,9 @@ export namespace Tools {
   }
 
   export function devices(tools: Tools): Block {
-    const work = (d: Device) => [...d.terms.values()][0]?.work;
-    const line = ([name, d]: [string, Device]) => "- " + name + (Tools.hands(d) ? " (computer use)" : "") + ", work dir " + work(d);
+    const work  = (d: Device) => [...d.terms.values()][0]?.work;
+    const shell = (d: Device) => [...d.terms.values()][0]?.shell;
+    const line  = ([name, d]: [string, Device]) => "- " + name + (Tools.hands(d) ? " (computer use)" : "") + ", work dir " + work(d) + (shell(d) ? ", shell " + shell(d) + " (closing unii does not kill a process a call left running after its shell ended)" : "");
     const lines = Tools.opened(tools).map(line);
     return { text: "Devices open now:\n" + (lines.length === 0 ? DEVICES_NONE : lines.join("\n")) + "\n\n", mark: false };
   }
