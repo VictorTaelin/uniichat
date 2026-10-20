@@ -57,7 +57,7 @@ export type Link = { send: (msg: object) => void; live: () => boolean; computer:
 // at work, the view its calls get and its replies so far
 export type Agent = {
   name    : string;
-  role    : { $: "sub"; effort: string | null } | { $: "hands"; device: string };
+  role    : { $: "sub"; effort: string | null; model: string | null } | { $: "hands"; device: string };
   call    : Call | null;
   live    : Live[];
   calls   : Record<string, string>; // its tool calls awaiting their results, by id (Chat.on)
@@ -170,10 +170,16 @@ ask. date(id) gives the date and time of message id. zoom("Name") gives
 an agent's whole chat.`;
 
 // an agent's log starts with a note of what it is: SUB_NOTE, and its
-// effort if not the configured one; or HANDS_NOTE and its device
+// model and effort if not the configured ones; or HANDS_NOTE and its
+// device
 const SUB_NOTE   = "subagent";
+const SUB_ON     = " on ";
 const SUB_AT     = " at effort ";
+const SUB_ROLE   = new RegExp("^" + SUB_NOTE + "(?:" + SUB_ON + "(\\S+))?(?:" + SUB_AT + "(\\S+))?$");
 const HANDS_NOTE = "computer task on ";
+
+// the models a subagent may be given (Tools.call)
+const MODELS = Pick.models(config.OFFER.vendors, config.OFFER.models).map(([, m]) => m.label);
 
 // the devices: how they work, in the system prompt (DEVICES); those open
 // now, at the start of each call's message (Tools.devices), so one
@@ -197,7 +203,7 @@ const OWN: Spec[] = [
   spec("date", "The date and time of message id.", { id: INT }, ["id"]),
 ];
 const BOSS: Spec[] = [
-  spec("spawn", "Start one subagent per task, in parallel, and return their names at once. Each one's report reaches you as a message \"[Name] report\" when it finishes. A subagent sees the view and the user's instructions, but knows what you want only from its task.", { tasks: { type: "array", items: STR }, effort: { type: "string", enum: EFFORTS, description: "How hard they think; by default, as hard as you." } }, ["tasks"]),
+  spec("spawn", "Start one subagent per task, in parallel, and return their names at once. Each one's report reaches you as a message \"[Name] report\" when it finishes. A subagent sees the view and the user's instructions, but knows what you want only from its task.", { tasks: { type: "array", items: STR }, effort: { type: "string", enum: EFFORTS, description: "How hard they think; by default, as hard as you." }, model: { type: "string", enum: MODELS, description: "Their model; by default, the one they'd run on. Set it ONLY when the user asks for that model or vendor in this chat, since another vendor may come with additional costs." } }, ["tasks"]),
   spec("tell", "Send a message to an agent (a subagent or a computer task), by name. One at work reads it between its tool calls, and its report answers it; an idle one goes on from its chat, and its reply reaches you as a message \"[Name] reply\".", { name: STR, message: STR }, ["name", "message"]),
 ];
 const DEVICE = { device: { type: "string", description: "The name of the device to run on, one listed under Devices." } };
@@ -362,7 +368,11 @@ export namespace Tools {
         if (effort !== null && !EFFORTS.includes(effort)) {
           return { text: "No effort " + effort + "; one of " + EFFORTS.join(", ") + ".", fail: true };
         }
-        return { text: await Tools.spawn(tools, (args.tasks ?? []).map(String), effort), fail: false };
+        const model = args.model === undefined ? null : String(args.model);
+        if (model !== null && !MODELS.includes(model)) {
+          return { text: "No model " + model + "; one of " + MODELS.join(", ") + ".", fail: true };
+        }
+        return { text: await Tools.spawn(tools, (args.tasks ?? []).map(String), effort, model), fail: false };
       }
       case "tell": {
         return { text: await Tools.tell(tools, String(args.name), String(args.message)), fail: false };
@@ -488,12 +498,12 @@ export namespace Tools {
   // Agents
   // ------
 
-  export async function spawn(tools: Tools, tasks: string[], effort: string | null): Promise<string> {
+  export async function spawn(tools: Tools, tasks: string[], effort: string | null, model: string | null = null): Promise<string> {
     const view = tasks.length === 0 ? "No tasks." : await Tools.view(tools);
     if (typeof view === "string") {
       return view;
     }
-    const names = tasks.map((task) => Tools.start(tools, { $: "sub", effort }, task, view));
+    const names = tasks.map((task) => Tools.start(tools, { $: "sub", effort, model }, task, view));
     return "Started " + names.join(", ") + ". Each one's report will reach you as a message when it finishes.";
   }
 
@@ -532,7 +542,7 @@ export namespace Tools {
     const agent = { name, role, call: null, live: [], calls: {}, stop: false, view, replies: [] };
     fs.mkdirSync(config.WORK + "/" + name, { recursive: true });
     tools.agents.set(name, agent);
-    tools.hooks.push(agent, "note", role.$ === "sub" ? SUB_NOTE + (role.effort === null ? "" : SUB_AT + role.effort) : HANDS_NOTE + role.device);
+    tools.hooks.push(agent, "note", role.$ === "sub" ? SUB_NOTE + (role.model === null ? "" : SUB_ON + role.model) + (role.effort === null ? "" : SUB_AT + role.effort) : HANDS_NOTE + role.device);
     tools.hooks.push(agent, "user", task);
     Tools.run(tools, agent);
     return name;
@@ -542,10 +552,9 @@ export namespace Tools {
   export function agent(tools: Tools, name: string): Agent | null {
     const log = tools.agents.has(name) ? null : Memory.agent(tools.mem, name);
     const note = log !== null && log.length > 0 && log[0].kind === "note" ? log[0].text : "";
-    const sub = note === SUB_NOTE || note.startsWith(SUB_NOTE + SUB_AT);
-    if (sub || note.startsWith(HANDS_NOTE)) {
-      const effort = note === SUB_NOTE ? null : note.slice((SUB_NOTE + SUB_AT).length);
-      const role: Agent["role"] = sub ? { $: "sub", effort } : { $: "hands", device: note.slice(HANDS_NOTE.length) };
+    const sub = SUB_ROLE.exec(note);
+    if (sub !== null || note.startsWith(HANDS_NOTE)) {
+      const role: Agent["role"] = sub !== null ? { $: "sub", effort: sub[2] ?? null, model: sub[1] ?? null } : { $: "hands", device: note.slice(HANDS_NOTE.length) };
       tools.agents.set(name, { name, role, call: null, live: [], calls: {}, stop: false, view: [], replies: [] });
     }
     return tools.agents.get(name) ?? null;
@@ -576,12 +585,12 @@ export namespace Tools {
     return tools.pay?.(agent.role.$ === "sub" ? "agent" : "computer", agent.name);
   }
 
-  // a call of an agent, on config.AGENTS or else the chat's pick (a
-  // computer task's sees no view, and only its computer tool)
+  // a call of an agent, on Tools.pick (a computer task's sees no view,
+  // and only its computer tool)
   export function ask(tools: Tools, agent: Agent): Ask {
     const log = { text: Memory.agent_show(tools.mem, agent.name), mark: true };
     const server = Tools.at(tools, agent.name);
-    const run = Pick.ask(config.AGENTS ?? tools.hooks.pick());
+    const run = Pick.ask(Tools.pick(tools, agent));
     const bill = Tools.bill(tools, agent);
     const role = agent.role;
     switch (role.$) {
@@ -596,6 +605,18 @@ export namespace Tools {
         return { ...run, system, blocks: [...agent.view, log], searches: 0, server, bill };
       }
     }
+  }
+
+  // what an agent runs on: config.AGENTS or else the chat's pick, with
+  // the model it was spawned with, if any; a throw if no longer offered
+  export function pick(tools: Tools, agent: Agent): Pick {
+    const base = config.AGENTS ?? tools.hooks.pick();
+    const model = agent.role.$ === "sub" ? agent.role.model : null;
+    const given = model === null ? base : Pick.to_model(base, model, config.OFFER.vendors, config.OFFER);
+    if (given === null) {
+      throw new Error(agent.name + "'s model " + model + " is no longer offered; spawn another subagent.");
+    }
+    return given;
   }
 
   // a string: why there is none (Memory.settle)

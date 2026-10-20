@@ -111,6 +111,13 @@ export namespace Pick {
     return hit === undefined ? null : hit[1];
   }
 
+  // the pick on another model (by label) of one of these vendors, if
+  // offered; null: none
+  export function to_model(pick: Pick, label: string, vendors: Vendor[], { models }: Offer): Pick | null {
+    const hit = Pick.models(vendors, models).find(([, m]) => m.label === label);
+    return hit === undefined ? null : Pick.on(pick, hit[0], hit[1]);
+  }
+
   export function label(pick: Pick): string {
     return [pick.vendor, pick.model, pick.effort, pick.speed].join(":");
   }

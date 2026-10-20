@@ -84,7 +84,8 @@ also be set as the variable `UNII_<KEY>`:
   `vendor:model:effort:speed` (default `claude-api:sonnet-5.5:medium:slow`).
 - `compactor`: what writes the summaries (default
   `claude-api:haiku-5.5:high:slow`).
-- `agents`: what subagents run on (default: the chat's pick).
+- `agents`: what subagents run on (default: the chat's pick). A
+  subagent spawned with a model runs on that with the model swapped.
 - `work`: the agents' working dirs on each device (default
   ~/.unii/work).
 - `rules`: a file appended to every system prompt.

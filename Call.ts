@@ -47,7 +47,7 @@ const READS = new Map<string, (x: Input) => Shown>([
   ["edit",     (x) => (Array.isArray(x.edits) ? { head: edits_files(x.edits), blocks: [] } : input_shown(x))],
   ["zoom",     (x) => ({ head: msg_show(x.id, x.n) + (x.at === undefined ? "" : " from char " + x.at), blocks: [] })],
   ["date",     (x) => ({ head: msg_show(x.id, 1), blocks: [] })],
-  ["spawn",    (x) => ({ head: tasks_show(x.tasks, x.effort), blocks: (Array.isArray(x.tasks) ? x.tasks : []).flatMap(text_block) })],
+  ["spawn",    (x) => ({ head: tasks_show(x.tasks, x.model, x.effort), blocks: (Array.isArray(x.tasks) ? x.tasks : []).flatMap(text_block) })],
   ["tell",     (x) => ({ head: String(x.name ?? ""), blocks: text_block(x.message) })],
   ["computer", (x) => ({ head: "", blocks: text_block(x.task) })],
 ]);
@@ -125,10 +125,11 @@ function msg_show(id: unknown, n: unknown): string {
   return typeof id === "number" ? "#" + id + many : String(id ?? "");
 }
 
-// a spawn's count of tasks, and its effort if named
-function tasks_show(tasks: unknown, effort: unknown): string {
+// a spawn's count of tasks, and its model and effort if named
+function tasks_show(tasks: unknown, model: unknown, effort: unknown): string {
   const n = Array.isArray(tasks) ? tasks.length : 0;
-  return n + (n === 1 ? " agent" : " agents") + (typeof effort === "string" ? " · " + effort : "");
+  const knobs = [model, effort].filter((k) => typeof k === "string").map((k) => " · " + k).join("");
+  return n + (n === 1 ? " agent" : " agents") + knobs;
 }
 
 // a read's lines, as path:4-7 shows them ("": the whole file)

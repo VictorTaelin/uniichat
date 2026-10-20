@@ -29,3 +29,20 @@ test("a call's MCP requests follow its chat past a process that ended", async ()
   expect(await (await ask()).text()).toBe("c /" + tools.key + "/main");
   c.stop(true);
 });
+
+test("a subagent spawned with a model runs on that model", async () => {
+  const chat = { vendor: "claude-api", model: "opus-5.5", effort: "high", speed: "fast" } as const;
+  let pick: any = chat;
+  const tools = { hooks: { pick: () => pick } } as any;
+  const spawn = (model: string) => Tools.call(tools, "main", "spawn", { tasks: ["x"], model }, new AbortController().signal, "1");
+  expect(await spawn("opus")).toMatchObject({ fail: true });
+  const sub = (model: string | null) => ({ name: "A", role: { $: "sub", effort: null, model } }) as any;
+  expect(Tools.pick(tools, sub(null))).toEqual(chat);
+  // at a speed the model has: haiku has no fast
+  expect(Tools.pick(tools, sub("haiku-5.5"))).toMatchObject({ vendor: "claude-api", model: "haiku-5.5", speed: "slow" });
+  // the chat moved to another vendor since: it stays on its model
+  pick = { vendor: "openai-api", model: "gpt-6-luna", effort: "low", speed: "slow" };
+  expect(Tools.pick(tools, sub("haiku-5.5"))).toMatchObject({ vendor: "claude-api", model: "haiku-5.5" });
+  // its model no longer offered: it fails, not switched to a pricier one
+  expect(() => Tools.pick(tools, sub("haiku-4.5"))).toThrow();
+});
