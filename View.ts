@@ -68,7 +68,11 @@ export type State = {
   bills     : boolean;
   credits   : number | null;
   importing : Progress | null;
+  mcp       : Plug[];
 };
+
+// an MCP server of the server's config (Mcp.ts), on or off in this chat
+export type Plug = { name: string; on: boolean };
 
 // fold: the tops shown (null: not folded); nodes and whole: the summaries
 // ("id+n") and messages known; open: the blocks opened (true) or shut by
@@ -131,6 +135,7 @@ export type Client =
   | { $: "goal"; text: string | null } // the goal set (/goal), or none (/halt)
   | { $: "go"; on: boolean } // the import's: resume (true) or pause
   | { $: "pick"; to: Pick }
+  | { $: "mcp"; name: string; on: boolean } // an MCP server turned on or off in this chat
   | { $: "out"; job: string; out: object }
   | { $: "zoom"; part: Part }
   | { $: "root" }
@@ -159,6 +164,7 @@ export type Act =
   | { $: "Shut"; id: number; n: number }        // a click on an open block's bar
   | { $: "Fold"; on: boolean }                  // fold all, unfold all
   | { $: "Goto"; name: string | null }          // a tab, a name, the logo (null: UniiChat)
+  | { $: "Plug"; name: string }                 // an MCP server turned on if off, else off
 
 // what a page draws, top to bottom
 export type Row =
@@ -277,6 +283,7 @@ export function view_new(): View {
     bills     : false,
     credits   : null,
     importing : null,
+    mcp       : [],
     parts     : [],
     turn      : Infinity,
     fold      : null,
@@ -445,6 +452,17 @@ export function view_act(v: View, act: Act): Client[] {
       v.page = known ?? { name: act.name, log: null, live: [] };
       v.pages.set(act.name, v.page);
       return known === undefined ? [{ $: "agent", name: act.name }] : [];
+    }
+    case "Plug": {
+      // from the last asked for and not acked, else the chat's
+      const asked = v.out.flatMap((p) => (p.msg.$ === "mcp" && p.msg.name === act.name ? [p.msg.on] : [])).at(-1);
+      const on = asked ?? v.mcp.find((p) => p.name === act.name)?.on;
+      if (on === undefined) {
+        const names = v.mcp.map((p) => p.name).join(", ");
+        v.notes.push("No MCP server " + act.name + (names === "" ? "; the server's config sets none." : "; one of: " + names + "."));
+        return [];
+      }
+      return [{ $: "mcp", name: act.name, on: !on }];
     }
   }
 }

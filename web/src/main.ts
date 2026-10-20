@@ -917,6 +917,7 @@ function bars(): void {
   $(".composer").classList.toggle("off", !on);
   $(".composer").classList.toggle("rec", P.rec !== null);
   markup($("#pick"), Html.pick_html(View.view_fold(v), v.fold === null, View.view_pick(v)));
+  markup($("#menu .mcp"), Html.mcp_html(v.mcp));
   $("#tabs").hidden = tabs.length < 2;
   markup($("#tabs"), Html.tabs_html(tabs));
   import_bar();

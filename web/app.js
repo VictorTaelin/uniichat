@@ -915,6 +915,7 @@ function view_new() {
     bills: false,
     credits: null,
     importing: null,
+    mcp: [],
     parts: [],
     turn: Infinity,
     fold: null,
@@ -1075,6 +1076,16 @@ function view_act(v, act) {
       v.page = known ?? { name: act.name, log: null, live: [] };
       v.pages.set(act.name, v.page);
       return known === undefined ? [{ $: "agent", name: act.name }] : [];
+    }
+    case "Plug": {
+      const asked = v.out.flatMap((p) => p.msg.$ === "mcp" && p.msg.name === act.name ? [p.msg.on] : []).at(-1);
+      const on = asked ?? v.mcp.find((p) => p.name === act.name)?.on;
+      if (on === undefined) {
+        const names = v.mcp.map((p) => p.name).join(", ");
+        v.notes.push("No MCP server " + act.name + (names === "" ? "; the server's config sets none." : "; one of: " + names + "."));
+        return [];
+      }
+      return [{ $: "mcp", name: act.name, on: !on }];
     }
   }
 }
@@ -1445,6 +1456,13 @@ function pick_html(fold, on, knobs) {
   const parts = knobs.map((k) => `<button title="${esc(k.hint)}"${act_html({ $: "Move", move: k.move })}>${esc(k.text)}</button>`);
   const all = fold === null ? [] : [`<button class="all"${act_html({ $: "Fold", on })}>${esc(fold)}</button>`];
   return [...all, `<span class="rule"></span>`, ...parts.flatMap((part, i) => i === 0 ? [part] : [`<span class="dot">·</span>`, part])];
+}
+function mcp_html(plugs) {
+  const one = (p) => {
+    const hint = "Its tools are " + (p.on ? "on" : "off") + " in this chat; click to turn them " + (p.on ? "off" : "on") + ".";
+    return `<button class="${p.on ? "on" : "off"}" title="${esc(hint)}"${act_html({ $: "Plug", name: p.name })}>${esc(p.name)}<span>${p.on ? "on" : "off"}</span></button>`;
+  };
+  return plugs.length === 0 ? [] : [`<p>MCP servers</p>`, ...plugs.map(one)];
 }
 function tabs_html(tabs) {
   return tabs.map((tab) => {
@@ -2267,6 +2285,7 @@ function bars() {
   $(".composer").classList.toggle("off", !on);
   $(".composer").classList.toggle("rec", P.rec !== null);
   markup($("#pick"), pick_html(view_fold(v), v.fold === null, view_pick(v)));
+  markup($("#menu .mcp"), mcp_html(v.mcp));
   $("#tabs").hidden = tabs.length < 2;
   markup($("#tabs"), tabs_html(tabs));
   import_bar();

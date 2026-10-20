@@ -21,6 +21,10 @@
 // between, which end (Tools.went) (a job's request waits on its job
 // there, by its id; a spawn or tell still waiting on summaries is done
 // there anew).
+// The user's MCP servers (Mcp.ts) add their tools to the master's and its
+// subagents', but those of servers the chat turned off (Memory `off`);
+// a call to one finishes where it started, never done again where the
+// chat moved.
 
 import * as fs from "node:fs";
 import { AskAI, type Ask, type Bill, type Block, type Call, type Event, type Kind, type Pay } from "./AskAI.ts";
@@ -29,6 +33,7 @@ import { report_text } from "./Call.ts";
 import { clip_page } from "./Clip.ts";
 import * as config from "./Config.ts";
 import { COMPUTER, INT, STR, TOOLS, spec, type Job, type Spec } from "./Machine.ts";
+import { Mcp, type Server, type Servers } from "./Mcp.ts";
 import { Memory } from "./Memory.ts";
 import PROMPT from "./prompt.txt" with { type: "text" };
 import { EFFORTS, Pick } from "./Pick.ts";
@@ -75,9 +80,11 @@ export type Moved = {
 };
 
 // what the server does for agents (report: work stopped stays unanswered;
-// pick: the chat's pick; halt: what stops its turn)
+// pick: the chat's pick; halt: what stops its turn; note: a note to the
+// chat, as of an MCP server failing)
 type Hooks = {
   push   : (agent: Agent, kind: Kind, text: string) => void;
+  note   : (text: string) => void;
   on     : (agent: Agent, ev: Event) => void;
   report : (agent: Agent, text: string, stopped: boolean) => void;
   change : () => void;
@@ -86,11 +93,12 @@ type Hooks = {
 };
 
 // the tools: what pays the calls (none: the vendors' keys); where its
-// chat moved (a process's tools URL), once it did
+// chat moved (a process's tools URL), once it did; the chat's MCP servers
 export type Tools = {
   mem     : Memory;
   devices : Map<string, Device>;
   agents  : Map<string, Agent>;
+  mcp     : Servers;
   key     : string;
   url     : string;
   hooks   : Hooks;
@@ -218,7 +226,9 @@ export namespace Tools {
   // key: a chat's moving here keeps its own
   export function serve(mem: Memory, hooks: Hooks, key: string = crypto.randomUUID()): Tools {
     const url = Tools.base() + key + "/";
-    const tools: Tools = { mem, devices: new Map(), agents: new Map(), key, url, hooks, away: Promise.withResolvers() };
+    const run = (device: string, job: Job, signal: AbortSignal) => Tools.job(tools, device, job, signal, crypto.randomUUID());
+    const mcp = Mcp.servers((text) => hooks.note(text), config.MCP, run, (device) => typeof Tools.open(tools, device, false) !== "string");
+    const tools: Tools = { mem, devices: new Map(), agents: new Map(), mcp, key, url, hooks, away: Promise.withResolvers() };
     CHATS.set(key, tools);
     fs.mkdirSync(MAIN, { recursive: true });
     return tools;
@@ -238,6 +248,7 @@ export namespace Tools {
 
   export function close(tools: Tools): void {
     Tools.stop(tools, null);
+    Mcp.end(tools.mcp);
     CHATS.delete(tools.key);
   }
 
@@ -292,11 +303,12 @@ export namespace Tools {
       return new Response(null, { status: 202 });
     }
     const no = { error: { code: -32601, message: "no method " + msg.method } };
+    const mcp = msg.method === "tools/call" && Tools.mcp(tools, who, String(msg.params?.name)) !== null;
     const here = Tools.answer(tools, who, msg.method, msg.params ?? {}, req.signal, id).then(
       (result) => (result === null ? no : { result }),
       (err) => ({ error: { code: -32603, message: String(err?.message ?? err) } }),
     );
-    const out = await Promise.race([here, tools.away.promise]);
+    const out = await (mcp ? here : Promise.race([here, tools.away.promise]));
     if (typeof out === "string") {
       return Tools.pass(out, key, who, msg, id, req.signal);
     }
@@ -317,12 +329,23 @@ export namespace Tools {
         return { protocolVersion, capabilities: { tools: {} }, serverInfo: { name: "unii", version: "1" } };
       }
       case "tools/list": {
-        return { tools: Tools.list(tools, who).map((t) => ({ name: t.name, description: t.info, inputSchema: t.schema })) };
+        const plugged = Tools.plugged(tools, who);
+        const theirs = plugged ? await Mcp.list(tools.mcp, Tools.off(tools)) : [];
+        // the servers' notes `who` hasn't heard, for the request it
+        // builds (Agent.loop); a subagent's kept in its log for its next
+        // ones (the master's are the chat's)
+        const notes = plugged ? Mcp.heard(tools.mcp, Tools.off(tools), who) : [];
+        const agent = tools.agents.get(who);
+        notes.forEach((text) => agent !== undefined && tools.hooks.push(agent, "note", text));
+        return { tools: [...Tools.list(tools, who), ...theirs].map((t) => ({ name: t.name, description: t.info, inputSchema: t.schema })), notes };
       }
       case "tools/call": {
         const name = String(params.name);
+        const args = params.arguments ?? {};
         const has = Tools.list(tools, who).some((t) => t.name === name);
-        const out = has ? await Tools.call(tools, who, name, params.arguments ?? {}, signal, id) : { text: "No tool " + name + ".", fail: true };
+        const mcp = has ? null : Tools.mcp(tools, who, name);
+        const no: Out = { text: "No tool " + name + ".", fail: true };
+        const out = has ? await Tools.call(tools, who, name, args, signal, id) : mcp !== null ? await Mcp.call(tools.mcp, mcp, name, args, signal) : no;
         const imgs = (out.imgs ?? []).map((img) => ({ type: "image", data: img.data, mimeType: img.type }));
         return { content: [{ type: "text", text: out.text }, ...imgs], isError: out.fail };
       }
@@ -338,6 +361,32 @@ export namespace Tools {
       return [...OWN, ...BOSS, ...kit(who), HAND];
     }
     return tools.agents.get(who)?.role.$ === "hands" ? [COMPUTER] : [...OWN, ...kit(who)];
+  }
+
+  // whether `who` gets the MCP servers' tools: the master and subagents
+  // do, computer tasks don't
+  export function plugged(tools: Tools, who: string): boolean {
+    return who === "main" || tools.agents.get(who)?.role.$ === "sub";
+  }
+
+  // the MCP servers the chat turned off
+  export function off(tools: Tools): string[] {
+    return tools.mem.off ?? [];
+  }
+
+  // the MCP server of `who`'s tool `name`, if it is on (named for it: it
+  // need not have listed its tools in this process, as in one the chat
+  // moved to, or since it crashed; Mcp.call starts it)
+  export function mcp(tools: Tools, who: string, name: string): Server | null {
+    return Tools.plugged(tools, who) ? Mcp.find(tools.mcp, Tools.off(tools), name) : null;
+  }
+
+  // an MCP server turned off: ended, its calls running failed
+  export function unplug(tools: Tools, name: string): void {
+    const s = tools.mcp.all.get(name);
+    if (s !== undefined) {
+      Mcp.close(s);
+    }
   }
 
   // id: a job's, if it starts one
@@ -613,6 +662,7 @@ export namespace Tools {
     const jobs = (d: Device) => [...d.jobs].map(([id, j]): [string, string, Job] => [id, j.term, j.job]);
     const devices = [...tools.devices].map(([name, d]): Moved["devices"][number] => [name, d.who, jobs(d)]);
     const agents = Tools.working(tools).map(({ role, call, ...a }) => ({ ...a, call: far(call!) }));
+    Mcp.end(tools.mcp);
     CHATS.delete(tools.key);
     GONE.set(tools.key, url);
     tools.away.resolve(url);

@@ -149,6 +149,13 @@ body.account footer > :not(#toast) { display: none; }
 [popover] > button { display: block; width: 100%; padding: 8px 4px; text-align: left; font-size: 14.5px; border-radius: 10px; }
 [popover] > button:hover { background: var(--hover); }
 #menu { width: 180px; padding: 6px; box-shadow: 0 8px 24px rgb(0 0 0 / .12); }
+#menu .mcp:empty { display: none; }
+#menu .mcp { margin: 4px 0; padding: 4px 0; border-block: 1px solid var(--hair); }
+#menu .mcp p { margin: 2px 4px 4px; font-size: 12px; color: var(--mid); }
+#menu .mcp button { display: flex; justify-content: space-between; width: 100%; padding: 8px 4px; text-align: left; font-size: 14.5px; border-radius: 10px; }
+#menu .mcp button:hover { background: var(--hover); }
+#menu .mcp span { color: var(--mid); font-size: 13px; }
+#menu .mcp .off { color: var(--mid); }
 .ai { margin: 6px 0 0; text-align: center; font: 12px var(--sans); color: var(--mid); }
 body:not(.guest) .ai { display: none; }
 /* the wallet (out of credit), Import History (also a new account's
@@ -327,7 +334,7 @@ header > .imping { display: flex; flex-direction: column; justify-content: cente
   :is(header > button, #pick button, #tabs button, .copy, .open.one > .fold)::after { content: ""; position: absolute; left: 50%; top: 50%; width: max(100%, 44px); height: max(100%, 44px); transform: translate(-50%, -50%); }
   :is(.ai, .fine, .foot) a { padding: 14px 0; }
   :is(.chip, .usd button) { height: 44px; }
-  [popover] > button { min-height: 44px; }
+  :is([popover] > button, #menu .mcp button) { min-height: 44px; }
 }
 
 /* images: under a message, each a link; over the box, those waiting to

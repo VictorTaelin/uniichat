@@ -16,6 +16,7 @@ import * as path from "node:path";
 import type { Out } from "./Agent.ts";
 import { CAP, clip, clip_end } from "./Clip.ts";
 import { Computer } from "./Computer.ts";
+import { Mcp } from "./Mcp.ts";
 
 // Types
 // =====
@@ -143,6 +144,9 @@ export namespace Machine {
         }
         case "computer": {
           return await Computer.act(input, signal);
+        }
+        case "mcp": {
+          return await Mcp.here(input, signal);
         }
         default: {
           return { text: "No tool " + job.name + ".", fail: true };

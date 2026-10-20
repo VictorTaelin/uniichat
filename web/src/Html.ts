@@ -112,6 +112,16 @@ export function pick_html(fold: string | null, on: boolean, knobs: View.Knob[]):
   return [...all, `<span class="rule"></span>`, ...parts.flatMap((part, i) => (i === 0 ? [part] : [`<span class="dot">·</span>`, part]))];
 }
 
+// the MCP servers in the ☰ menu, each on or off in this chat (a click
+// switches it); none: nothing
+export function mcp_html(plugs: View.Plug[]): string[] {
+  const one = (p: View.Plug) => {
+    const hint = "Its tools are " + (p.on ? "on" : "off") + " in this chat; click to turn them " + (p.on ? "off" : "on") + ".";
+    return `<button class="${p.on ? "on" : "off"}" title="${esc(hint)}"${act_html({ $: "Plug", name: p.name })}>${esc(p.name)}<span>${p.on ? "on" : "off"}</span></button>`;
+  };
+  return plugs.length === 0 ? [] : [`<p>MCP servers</p>`, ...plugs.map(one)];
+}
+
 export function tabs_html(tabs: View.Tab[]): string[] {
   return tabs.map((tab) => {
     const here = tab.here ? ` class="here"` : "";

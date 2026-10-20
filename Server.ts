@@ -39,6 +39,7 @@ import { clip_pages } from "./Clip.ts";
 import { Cloud, type Account, type User } from "./Cloud.ts";
 import { Disk } from "./Disk.ts";
 import { Mail } from "./Mail.ts";
+import { Mcp } from "./Mcp.ts";
 import * as Import from "./Import.ts";
 import { JOBS, Memory, type Given, type Msg as Log, type Share } from "./Memory.ts";
 import { OpenAI, TRANSCRIBER } from "./OpenAI.ts";
@@ -280,6 +281,7 @@ export namespace Chat {
     const mem = Memory.load(dir, () => Chat.share(chat), (id, ans) => Cloud.act_put(acct, id, ans));
     const tools = Tools.serve(mem, {
       push   : (agent, kind, text) => Chat.push(chat, agent, kind, text),
+      note   : (text) => Chat.note(chat, text),
       on     : (agent, ev) => Chat.on(chat, agent, ev),
       report : (agent, text, stopped) => Chat.report(chat, agent, text, stopped),
       change : () => Chat.change(chat),
@@ -544,6 +546,9 @@ export namespace Chat {
     const msgs = (chat.sent = chat.wait.splice(0));
     const says = msgs.filter((m) => m.end > from).map((m) => Memory.say(mem, Math.max(m.id, from), m.end));
     const view = Memory.view(mem, from);
+    // the MCP servers' notes so far are in the view: the call's listing
+    // gives the master only those made since (Mcp.heard)
+    Mcp.heard(chat.tools.mcp, Tools.off(chat.tools), "main");
     const text = says.map((say) => say.text).join("\n\n");
     const imgs = says.flatMap((say) => say.imgs);
     const server = Tools.at(chat.tools, "main");
@@ -1066,7 +1071,8 @@ export namespace Chat {
     const why = chat.mem.hold[1];
     const importing = batch && { done: batch.all - Chat.time(batch), total: batch.all, spent: batch.spent, left: batch.left / 1e6, why, msgs: batch.b - batch.a, open: batch.open };
     const billing = Chat.cloud.billing;
-    return { $: "state", busy: chat.busy, wait: Chat.waits(chat), agents, pick: chat.pick, ...config.OFFER, bills: billing.bills, credits: billing.credits(chat.acct.user), importing };
+    const mcp = config.MCP.map(({ name }) => ({ name, on: !chat.mem.off.includes(name) }));
+    return { $: "state", busy: chat.busy, wait: Chat.waits(chat), agents, pick: chat.pick, ...config.OFFER, bills: billing.bills, credits: billing.credits(chat.acct.user), importing, mcp };
   }
 
   export function waits(chat: Chat): Wait {
@@ -1262,6 +1268,27 @@ export namespace Chat {
       }
       case "out": {
         Tools.done(chat.tools, device, String(msg.job), msg.out);
+        return {};
+      }
+      case "mcp": {
+        // an MCP server on or off in this chat: one off ends, its calls
+        // running failed; the chat is told, so the AI knows its tools
+        // changed
+        const name = String(msg.name);
+        const on = msg.on === true || msg.on === "true";
+        if (!config.MCP.some((s) => s.name === name)) {
+          return { error: "No MCP server " + name + "." };
+        }
+        if (chat.mem.off.includes(name) !== on) {
+          return {};
+        }
+        chat.mem.off = on ? chat.mem.off.filter((n) => n !== name) : [...chat.mem.off, name];
+        Memory.save(chat.mem);
+        if (!on) {
+          Tools.unplug(chat.tools, name);
+        }
+        Chat.note(chat, "MCP server " + name + " turned " + (on ? "on" : "off") + " by the user.");
+        Chat.change(chat);
         return {};
       }
     }

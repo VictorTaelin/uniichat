@@ -171,8 +171,9 @@ export namespace Agent {
     if (!key) {
       throw new Error("no API key: set " + wire.key.toUpperCase() + "_API_KEY");
     }
-    const tools = await Agent.server(run);
-    const parts = ask.blocks.filter((b) => b.text !== "");
+    const { tools, notes } = await Agent.server(run);
+    const noted = notes.length === 0 ? [] : [{ text: notes.map((note) => "Note: " + note + "\n").join("") + "\n", mark: false }];
+    const parts = [...ask.blocks.slice(0, -1), ...noted, ...ask.blocks.slice(-1)].filter((b) => b.text !== "");
     const items: Item[] = [{ $: "User", parts, imgs: ask.imgs ?? [] }];
     while (!signal.aborted) {
       const step = await Agent.step(wire, run, key, (max) => wire.body(ask, items, tools, max), items);
@@ -483,12 +484,14 @@ export namespace Agent {
     }
   }
 
-  export async function server(run: Run): Promise<Tool[]> {
+  // the call's tools, and the notes their listing gave it (Tools.answer)
+  export async function server(run: Run): Promise<{ tools: Tool[]; notes: string[] }> {
     if (!run.ask.server) {
-      return [];
+      return { tools: [], notes: [] };
     }
     const list = await Agent.rpc(run, "tools/list", {});
-    return list.tools.map((t: any) => ({ name: t.name, info: t.description, schema: t.inputSchema }));
+    const tools = list.tools.map((t: any) => ({ name: t.name, info: t.description, schema: t.inputSchema }));
+    return { tools, notes: Array.isArray(list.notes) ? list.notes.map(String) : [] };
   }
 
   export async function call(run: Run, name: string, input: unknown): Promise<Out> {

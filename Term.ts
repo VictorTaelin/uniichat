@@ -23,6 +23,7 @@ import * as os from "node:os";
 import type { Kind } from "./AskAI.ts";
 import * as Import from "./Import.ts";
 import { Machine, type Job } from "./Machine.ts";
+import { Mcp } from "./Mcp.ts";
 import * as Paint from "./Paint.ts";
 import { type Move, Pick } from "./Pick.ts";
 import * as Screen from "./Screen.ts";
@@ -181,6 +182,7 @@ function term_groups(v: View.View): [group: string, cmds: Cmd[]][] {
       ["/model [name]",     "",                        "the models to pick from; with a name, that one", (t, a) => term_pick(t, "model", a)],
       ["/effort [level]",   "",                        "the efforts; with one, that one",                (t, a) => term_pick(t, "effort", a)],
       ["/speed [speed]",    "",                        "the speeds; with one, that one",                 (t, a) => term_pick(t, "speed", a)],
+      ["/mcp [name]",       "",                        "the MCP servers, on or off in this chat; with a name, that one turned on or off", term_mcp],
     ]],
     ["Agents", [
       ["",                  "Tab",                     "the next tab",                                   term_cycle],
@@ -247,9 +249,11 @@ function term_connect(t: Term): void {
   });
 }
 
-// a socket lost (up: it had opened): the footer says offline; one that
-// never opened, if the server refuses this terminal's session, quits
+// a socket lost (up: it had opened): the footer says offline, the MCP
+// programs run here for chats end (Mcp.lost); one that never opened, if
+// the server refuses this terminal's session, quits
 async function term_lost(t: Term, up: boolean): Promise<boolean> {
+  Mcp.lost();
   term_draw(t);
   if (!up && !await term_signed(t.url)) {
     term_note(t, "This terminal is signed out: run unii again to sign in.");
@@ -536,6 +540,17 @@ function term_pick(t: Term, move: Move, arg: string): void {
   const parts = [...new Set(Pick.options(t.v.pick, move, t.v).map(([part]) => part))];
   const list  = parts.map((part) => (part === knob.text ? part + " (now)" : part));
   term_note(t, move[0].toUpperCase() + move.slice(1) + "s: " + list.join(", ") + ". Pick one with /" + move + " <" + move + ">.");
+}
+
+// the MCP servers the server's config sets, on or off in this chat; with
+// a name, that one switched
+function term_mcp(t: Term, arg: string): void {
+  if (arg !== "") {
+    term_act(t, { $: "Plug", name: arg });
+    return;
+  }
+  const list = t.v.mcp.map((p) => p.name + (p.on ? " (on)" : " (off)"));
+  term_note(t, list.length === 0 ? "No MCP servers: the server's config sets none." : "MCP servers: " + list.join(", ") + ". Turn one on or off with /mcp <name>.");
 }
 
 async function term_export(t: Term): Promise<void> {

@@ -93,6 +93,20 @@ also be set as the variable `UNII_<KEY>`:
   process). With a number, `Server.ts` only routes, behind a proxy that
   honors its `x-unii-worker` header (Server.ts explains).
 - `apple`, `apns`: the iOS app's App ID and push key id (ios/).
+- `mcp`: MCP servers whose tools the AI and its subagents get beside
+  their own, named `<server>__<tool>`. The shape of Claude's
+  `mcpServers` (its `.mcp.json` works as is), as JSON or a file's path:
+  a program (`command`, `args`, `env`, `cwd`) or a URL (`"type":
+  "http"`, `url`, `headers`; streamable HTTP). `${VAR}` reads the
+  environment. `timeout`: seconds a call may take (600). `"device":
+  "<name>"` runs a program on that device instead; while it isn't open,
+  its tools are left out. E.g. `{"fs": {"command": "npx", "args": ["-y",
+  "@modelcontextprotocol/server-filesystem", "/srv/notes"]}}`. A program
+  gets only `HOME`, `PATH`, `USER`, `LANG` and a few more of unii's
+  variables, plus its `env`. Each chat runs its own copy, with the
+  server's rights: every user of the server gets them. `/mcp <name>` or
+  the site's ☰ menu turns one off or on in a chat. Plain `http` sends
+  headers unencrypted: use it on a network you trust.
 
 Keys are read from the environment: `ANTHROPIC_API_KEY`,
 `OPENAI_API_KEY`, `RESEND_API_KEY` (to email sign-in links; none: they
