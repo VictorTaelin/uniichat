@@ -4,8 +4,9 @@
 // off. Reasoning keeps all turns (else a message sent mid-run drops it
 // and misses the cache); the speed is a service tier ("priority" is
 // fast). A marked block is an explicit breakpoint; the end is cached
-// implicitly only if marked. A server_error is busy; failed, incomplete
-// or refused fails. Silent while it reasons, it is dead after 20 min.
+// implicitly only if marked. A server_error is busy, a
+// rate_limit_exceeded a usage limit; failed, incomplete or refused
+// fails. Silent while it reasons, it is dead after 20 min.
 // Voice: TRANSCRIBER writes a recording out, and says its seconds.
 
 import type { Ask, Img } from "./AskAI.ts";
@@ -158,7 +159,8 @@ export namespace OpenAI {
     const refusals = out.flatMap((o) => (o.type === "message" ? o.content : [])).filter((c: any) => c.type === "refusal");
     const step: Step = { out, uses, entries: out.flatMap(OpenAI.entries), stop: "done", why: "", note };
     if (res.status === "failed") {
-      return { ...step, stop: res.error?.code === "server_error" ? "busy" : "fail", why: res.error?.message ?? "failed" };
+      const stop = res.error?.code === "server_error" ? "busy" : res.error?.code === "rate_limit_exceeded" ? "limit" : "fail";
+      return { ...step, stop, why: res.error?.message ?? "failed" };
     }
     if (res.status === "incomplete") {
       return { ...step, stop: "fail", why: "incomplete: " + res.incomplete_details?.reason };

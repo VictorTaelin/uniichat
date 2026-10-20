@@ -507,6 +507,12 @@ export namespace Tools {
     return { text: "Started " + name + " on " + device + ". Its report will reach you as a message.", fail: false };
   }
 
+  // what the work a restart cut is told as it goes on (Server.ts
+  // Chat.resume)
+  export function restarted(work: string[]): string {
+    return "The server restarted, cutting " + work.join(", ") + "; nothing was lost: go on.";
+  }
+
   export async function tell(tools: Tools, name: string, message: string): Promise<string> {
     const agent = Tools.agent(tools, name);
     if (agent === null) {
@@ -552,8 +558,10 @@ export namespace Tools {
   }
 
   // calls while a message waits in its log (told too late for the call
-  // before), the first `call` if it runs (its chat moved here); then its
-  // report. Detached: a throw ends it as a failed reply, still reported
+  // before), the first `call` if it runs (its chat moved here; one a
+  // deploy cut as it waited for a usage limit asks anew, told so, as
+  // after a restart); then its report. Detached: a throw ends it as a
+  // failed reply, still reported
   export async function run(tools: Tools, agent: Agent, call: Call | null = null): Promise<void> {
     try {
       for (let more = true; more; call = null) {
@@ -561,6 +569,10 @@ export namespace Tools {
         tools.hooks.change();
         const end = await agent.call.done;
         agent.call = null;
+        if (end.cut && !agent.stop) {
+          tools.hooks.push(agent, "user", Tools.restarted([agent.name]));
+          continue;
+        }
         agent.replies.push(end.ok ? end.text : "failed: " + end.text);
         more = end.ok && end.left.length > 0;
       }

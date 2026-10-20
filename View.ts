@@ -9,7 +9,7 @@
 // agent's page is its log, kept live. The AI notice (AI) opens the chat
 // and comes again before a message in another 3-hour window.
 
-import type { Kind, Vendor } from "./AskAI.ts";
+import type { Kind, Parked, Vendor } from "./AskAI.ts";
 import { topup } from "./Import.ts";
 import * as Call from "./Call.ts";
 import * as Md from "./Md.ts";
@@ -57,7 +57,8 @@ export type Wait = string;
 
 // agents: those at work; vendors and models: those offered; bills:
 // whether the server bills (Billing.ts); credits: what the user may
-// spend (null: free, or not told)
+// spend (null: free, or not told); limits: the calls waiting for a usage
+// limit, by TURN or agent name
 export type State = {
   busy      : boolean;
   wait      : Wait;
@@ -68,6 +69,7 @@ export type State = {
   bills     : boolean;
   credits   : number | null;
   importing : Progress | null;
+  limits    : Record<string, Parked>;
 };
 
 // fold: the tops shown (null: not folded); nodes and whole: the summaries
@@ -277,6 +279,7 @@ export function view_new(): View {
     bills     : false,
     credits   : null,
     importing : null,
+    limits    : {},
     parts     : [],
     turn      : Infinity,
     fold      : null,
@@ -483,10 +486,22 @@ export function view_tail(v: View, live = view_stream(v)): Row[] {
   const load = v.page === null && v.importing !== null ? [Cap(progress_show(v, v.importing))] : [];
   const said = v.page === null && !v.up ? v.out.flatMap((p) => entry_rows(null, "user", p.said)) : [];
   const kept = said.length > 0 ? [...said, Cap(UNSENT)] : [];
+  const limit = v.limits[v.page === null ? TURN : v.page.name];
+  if (limit !== undefined) {
+    return [...rows, Cap(limit_show(limit)), ...kept, ...load];
+  }
   if (v.page !== null || rows.length > 0 || v.wait === "") {
     return [...rows, ...kept, ...load];
   }
   return [Cap(v.wait === SUMMARIES ? SUMS : "waiting for " + v.wait + "…"), ...kept, ...load];
+}
+
+// a call waiting for a usage limit: when it asks again, in the viewer's
+// time (its weekday too if not today), and whether it then surely resumes
+export function limit_show(limit: Parked, now = Date.now()): string {
+  const at  = new Date(limit.until);
+  const day = at.toDateString() === new Date(now).toDateString() ? {} : { weekday: "short" as const };
+  return "waiting for the usage limit, " + (limit.known ? "resumes" : "tries again") + " at " + at.toLocaleString(undefined, { ...day, hour: "2-digit", minute: "2-digit" });
 }
 
 // what streams on the page shown

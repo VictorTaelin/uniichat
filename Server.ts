@@ -24,8 +24,10 @@
 // work goes on there, the calls it runs (its turn's, agents', summaries')
 // going on where they started, fed straight to where the chat is (Main.away,
 // Main.far), and its views open again there at once (View.ts MOVE). It
-// ends once those calls do (a process that ran none, at once). A stop or
-// crash cuts all: a start resumes what ran (Chat.wake), told so.
+// ends once those calls do (a process that ran none, at once); one
+// waiting for a usage limit is cut, and goes on there as after a restart
+// (Main.away). A stop or crash cuts all: a start resumes what ran
+// (Chat.wake), told so.
 //
 // Usage: Server.ts [port]   (127.0.0.1; default 8788)
 
@@ -33,7 +35,7 @@ import * as fs from "node:fs";
 import * as net from "node:net";
 import type { ServerWebSocket } from "bun";
 import { READING } from "./Agent.ts";
-import { AskAI, type Bill, type Grant, type Call, type End, type Event, type Kind, type Say, type Sink } from "./AskAI.ts";
+import { AskAI, type Bill, type Grant, type Call, type End, type Event, type Kind, type Parked, type Say, type Sink } from "./AskAI.ts";
 import type { Wallet } from "./Billing.ts";
 import { clip_pages } from "./Clip.ts";
 import { Cloud, type Account, type User } from "./Cloud.ts";
@@ -92,7 +94,8 @@ type Batch = Kept & { micros: number[][]; open: number[]; left: number; all: num
 // running (Chat.check); sent, wait: messages given and waiting; ending:
 // what to do once at rest as it ends (all: nothing runs) or moves (no
 // post runs); writes, held: the posts logging, one after another, and
-// the logging held meanwhile (null: none); wallet: what pays its calls
+// the logging held meanwhile (null: none); wallet: what pays its calls;
+// limits: the calls waiting for a usage limit, by TURN or agent name
 type Chat = {
   acct  : Account;
   mem   : Memory;
@@ -119,6 +122,7 @@ type Chat = {
   writes: Promise<unknown>;
   held  : Array<() => void> | null;
   wallet: Wallet;
+  limits: Record<string, Parked>;
 };
 
 // a chat as it moves to another process (Chat.move): its user (an id:
@@ -297,7 +301,7 @@ export namespace Chat {
     const chat: Chat = {
       acct, mem, tools, pick, socks: new Set(), acts: new Map(), busy: false, posts: 1, call: null, model: "", check: null, asked: false, open: 0, sent: [], wait: [],
       halt: new AbortController(), live: [], calls: {}, eye: { parts: [], from: 0 }, after: Promise.resolve(), batch: null, ending: null,
-      writes: Promise.resolve(), held: null, wallet,
+      writes: Promise.resolve(), held: null, wallet, limits: {},
     };
     // a saved pick not offered gave way: told once
     const saved = mem.pick === null ? null : Pick.label(mem.pick as Pick);
@@ -480,7 +484,7 @@ export namespace Chat {
   }
 
   // a message logged: to the running call if whole beside its view, else
-  // to the next
+  // to the next (a goal check running, whose answer it drops, stops)
   export function take(chat: Chat, msg: Msg): void {
     const mem = chat.mem;
     if (chat.call !== null && Memory.whole(mem, msg.id) === msg.id) {
@@ -489,6 +493,7 @@ export namespace Chat {
       return;
     }
     chat.wait.push(msg);
+    chat.check?.call.stop();
     if (!chat.busy) {
       Chat.turn(chat);
     }
@@ -560,14 +565,18 @@ export namespace Chat {
     return Chat.ended(chat, call, halt);
   }
 
-  // the turn's call ends; false: the turn ends
+  // the turn's call ends; false: the turn ends. One a deploy cut as it
+  // waited for a usage limit goes on, as after a restart
   export async function ended(chat: Chat, call: Call, halt: AbortController): Promise<boolean> {
     const end = await call.done;
     chat.call = null;
+    delete chat.limits[TURN];
     Chat.unanswered(chat, null);
     Chat.live(chat, null, []);
     chat.wait.unshift(...chat.sent.slice(chat.sent.length - end.left.length));
-    if (!end.ok && !halt.signal.aborted) {
+    if (end.cut && !halt.signal.aborted) {
+      await Chat.writing(chat, () => Chat.resume(chat, [TURN]));
+    } else if (!end.ok && !halt.signal.aborted) {
       Chat.failed(chat, end.text);
     }
     if (end.note) {
@@ -590,14 +599,23 @@ export namespace Chat {
       return Memory.line({ l: 0, i }, msg.kind + ": " + msg.text) + "\n";
     });
     const blocks = [...Memory.view(mem, at), { text: tail.join("") + GOAL_ASK + goal, mark: true }];
-    return { call: AskAI.ask({ ...Chat.share(chat), system: GOAL, blocks, bill: mem.pay?.("chat", "goal") }, () => {}), goal };
+    return { call: AskAI.ask({ ...Chat.share(chat), system: GOAL, blocks, bill: mem.pay?.("chat", "goal") }, (ev) => Chat.checking(chat, ev)), goal };
+  }
+
+  // a goal check's events: only its waits for a usage limit show, as the
+  // turn's
+  export function checking(chat: Chat, ev: Event): void {
+    if (ev.$ === "Limit") {
+      Chat.limit(chat, TURN, ev.limit);
+    }
   }
 
   // a goal check's answer, as the turn's call's is, read where the chat
   // is (its call moves with it: Chat.move): unmet (any answer but yes),
   // the user's nudge goes to the turn as their message; met, the goal
   // ends. A check that fails, a stop, a message or a /halt meanwhile end
-  // it with no nudge, so the turn ends; false: it ends
+  // it with no nudge, so the turn ends; one a deploy cut as it waited for
+  // a usage limit is asked anew; false: it ends
   export async function checked(chat: Chat, check: Check<Call>, halt: AbortController): Promise<boolean> {
     const { call, goal } = (chat.check = check);
     halt.signal.addEventListener("abort", () => call.stop(), { once: true });
@@ -605,6 +623,10 @@ export namespace Chat {
     const mem = chat.mem;
     const on = !halt.signal.aborted && mem.goal === goal && chat.wait.length === 0;
     chat.check = null;
+    delete chat.limits[TURN];
+    if (on && end.cut) {
+      return Chat.checked(chat, Chat.check(chat, goal), halt);
+    }
     if (on && !end.ok) {
       Chat.note(chat, "No goal check: " + end.text.replace(/\.$/, "") + ". The goal stays; /halt drops it.");
     } else if (on && /^\W*yes\b/i.test(end.text)) {
@@ -645,6 +667,9 @@ export namespace Chat {
   export function on(chat: Chat, agent: Agent | null, ev: Event): void {
     const at = agent ?? chat;
     const name = agent?.name;
+    if (ev.$ === "Limit") {
+      return Chat.limit(chat, name ?? TURN, ev.limit);
+    }
     if (agent === null) {
       Chat.asks(chat, ev);
     }
@@ -668,6 +693,17 @@ export namespace Chat {
       });
     }
     Chat.live(chat, agent, Chat.waiting(at));
+  }
+
+  // the turn (TURN) or agent named waits for a usage limit (Agent.park),
+  // or no longer (null), told to every view
+  export function limit(chat: Chat, name: string, limit: Parked | null): void {
+    if (limit === null) {
+      delete chat.limits[name];
+    } else {
+      chat.limits[name] = limit;
+    }
+    Chat.all(chat, Chat.state(chat));
   }
 
   // what streams once an entry came: the tool calls awaiting their
@@ -711,6 +747,7 @@ export namespace Chat {
   // It is taken as a post is, so the chat never rests between logging it
   // and its turn
   export function report(chat: Chat, agent: Agent, text: string, stopped: boolean): void {
+    delete chat.limits[agent.name];
     Chat.unanswered(chat, agent);
     Chat.live(chat, agent, []);
     Chat.hold(chat, () => {
@@ -970,7 +1007,7 @@ export namespace Chat {
     if (work.length === 0 || Chat.chats.get(chat.acct.user) !== chat) {
       return;
     }
-    const text = "The server restarted, cutting " + work.join(", ") + "; nothing was lost: go on.";
+    const text = Tools.restarted(work);
     const msg = Chat.push(chat, null, "note", text);
     await Promise.all(work.map((w) => (w === TURN ? Chat.take(chat, msg) : Tools.tell(chat.tools, w, text))));
   }
@@ -1018,7 +1055,7 @@ export namespace Chat {
     Memory.take(chat.mem, moved.sums, (id, bill) => far(id, () => {}, bill));
     if (turn.busy) {
       const run = call === null ? null : (chat.call = far(call, (ev) => Chat.on(chat, null, ev), chat.mem.pay?.("chat", String(turn.sent[0].id))));
-      const checking = check ? { call: far(check.call, () => {}, chat.mem.pay?.("chat", "goal")), goal: check.goal } : null;
+      const checking = check ? { call: far(check.call, (ev) => Chat.checking(chat, ev), chat.mem.pay?.("chat", "goal")), goal: check.goal } : null;
       Chat.turn(chat, run ? Chat.ended(chat, run, chat.halt) : checking && Chat.checked(chat, checking, chat.halt));
     }
   }
@@ -1066,7 +1103,7 @@ export namespace Chat {
     const why = chat.mem.hold[1];
     const importing = batch && { done: batch.all - Chat.time(batch), total: batch.all, spent: batch.spent, left: batch.left / 1e6, why, msgs: batch.b - batch.a, open: batch.open };
     const billing = Chat.cloud.billing;
-    return { $: "state", busy: chat.busy, wait: Chat.waits(chat), agents, pick: chat.pick, ...config.OFFER, bills: billing.bills, credits: billing.credits(chat.acct.user), importing };
+    return { $: "state", busy: chat.busy, wait: Chat.waits(chat), agents, pick: chat.pick, ...config.OFFER, bills: billing.bills, credits: billing.credits(chat.acct.user), importing, limits: chat.limits };
   }
 
   export function waits(chat: Chat): Wait {
@@ -1231,6 +1268,7 @@ export namespace Chat {
         }
         chat.mem.goal = goal;
         Memory.save(chat.mem);
+        chat.check?.call.stop();
         if (goal === null) {
           Chat.note(chat, "Goal halted by the user.");
         }
@@ -1958,10 +1996,24 @@ export namespace Main {
   // and ends goes where the chat is, by its ref: this process's address
   // and an id, or, fed here from further back, its own, passed on till
   // its origin feeds the chat's process itself (gone); a request it books
-  // there goes with its input exact (Cost: a count can't go)
+  // there goes with its input exact (Cost: a count can't go). One that
+  // started here is woken (one parked asks once more) and cut once it
+  // waits for a usage limit, its end told so (End.cut), so it goes on
+  // where the chat is and no process waits on running old code
   export function away(peer: Peer, call: Call): string {
+    const own = !Main.refs.has(call);
     const ref = Main.refs.get(call) ?? Main.addr + "#" + crypto.randomUUID();
     const away: Away = { call, link: peer };
+    let cut = false;
+    const on = (ev: Event) => {
+      if (own && !cut && ev.$ === "Limit" && ev.limit !== null) {
+        cut = true;
+        call.stop();
+      }
+      if (!cut) {
+        away.link.send({ $: "ev", call: ref, ev });
+      }
+    };
     const bill: Bill = async (cost, cap) => {
       const { input, token } = cost.exact === null ? cost : await cost.exact();
       const req = crypto.randomUUID();
@@ -1971,11 +2023,14 @@ export namespace Main {
     };
     const end = (end: End) => {
       Main.aways.delete(ref);
-      away.link.send({ $: "end", call: ref, end });
+      away.link.send({ $: "end", call: ref, end: cut ? { ...end, cut } : end });
       Main.done();
     };
     Main.aways.set(ref, away);
-    call.move({ on: (ev) => away.link.send({ $: "ev", call: ref, ev }), bill, end });
+    call.move({ on, bill, end });
+    if (own) {
+      call.wake();
+    }
     return ref;
   }
 

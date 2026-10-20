@@ -15,6 +15,13 @@
 // An import asks a busy model again by one request at a time, the rest
 // waiting on it, so imports share what room is left alike, however many
 // requests each runs.
+// A usage limit (a 429 but OpenAI's insufficient_quota, or a rate-limit
+// stream error) never ends a call: it asks again at the reset the vendor
+// tells, else after a doubling wait up to LIMIT (a patient call's:
+// AGAIN); from TRIES on, at least that doubling, so one that never
+// clears never asks fast. A wait of LONG or more parks it (Agent.park):
+// a Limit event tells till when, and a message sent, a wake or a stop
+// ends the wait.
 // A busy model is logged as its first request asks again and as its
 // last is done, never each try (a storm logged ~600 lines a second).
 // A call ends answered
@@ -31,7 +38,7 @@
 // cut. A paid request is booked first (worst, Bill: AskAI.ts), then takes
 // its place in single flight (AskAI.wait).
 
-import { AskAI, type Grant, type Cost, type Ask, type Block, type Flight, type Try, type End, type Event, type Img, type Kind, type Say } from "./AskAI.ts";
+import { AGAIN, AskAI, type Grant, type Cost, type Ask, type Block, type Flight, type Try, type End, type Event, type Img, type Kind, type Say } from "./AskAI.ts";
 import { Anthropic } from "./Anthropic.ts";
 import { OpenAI } from "./OpenAI.ts";
 import { Price, type Usage } from "./Price.ts";
@@ -57,6 +64,7 @@ type Run = {
   sent  : Say[];
   abort : AbortController;
   end   : End;
+  poke  : () => void; // a message was sent, or a wake: ends a park
 };
 
 export type Back = { id: string; out: Out };
@@ -83,7 +91,7 @@ export type Step = {
   out     : unknown[];
   uses    : Use[];
   entries : Entry[];
-  stop    : "done" | "tools" | "again" | "busy" | "down" | "lost" | "fail";
+  stop    : "done" | "tools" | "again" | "busy" | "limit" | "down" | "lost" | "fail";
   why     : string;
   note    : string;
 };
@@ -118,6 +126,11 @@ export const TRIES = 8;
 // what a call the vendor never answered says
 const BUSY  = "the AI service is busy or unavailable right now";
 
+// a usage limit's waits: from how long one parks its call, and the
+// longest it waits between tries when no reset is told
+export const LONG  = 60e3;
+export const LIMIT = 1800e3;
+
 // the most tokens a model reads an image as (scaled to 1568 px at most),
 // and a web search's results are booked as (0.1k to 8k)
 const PIC    = 4096;
@@ -141,8 +154,11 @@ export namespace Agent {
 
   export function ask(ask: Ask, on: (ev: Event) => void): Try {
     const end = AskAI.end("");
-    const run: Run = { ask, on, sent: [], abort: new AbortController(), end };
-    const send = (say: Say) => run.sent.push(say);
+    const run: Run = { ask, on, sent: [], abort: new AbortController(), end, poke: () => {} };
+    const send = (say: Say) => {
+      run.sent.push(say);
+      run.poke();
+    };
     const stop = () => {
       end.text = "stopped";
       run.abort.abort();
@@ -161,7 +177,7 @@ export namespace Agent {
       end.left = run.sent;
       return end;
     })();
-    return { send, stop, done };
+    return { send, stop, wake: () => run.poke(), done };
   }
 
   export async function loop<S>(wire: Wire<S>, run: Run): Promise<void> {
@@ -227,7 +243,7 @@ export namespace Agent {
   // it holds its room (Room): its model's, or its import's, which one
   // request holds at a time while the rest wait on it, so each import
   // has one request at a busy model however many it runs, and imports
-  // share its room alike
+  // share its room alike. k: its busy tries, n: its usage-limit ones
   export async function step<S>(wire: Wire<S>, run: Run, key: string, make: (max: number) => unknown, items: Item[]): Promise<Step> {
     const body = make(MAX);
     const cost = Agent.worst(run.ask, JSON.stringify(body), items, () => wire.count(key, run.ask, body));
@@ -235,21 +251,23 @@ export namespace Agent {
     const model = run.ask.model;
     const own = run.ask.yields === undefined ? model : model + " " + run.ask.yields;
     let asking = false;
+    let parked = false;
     try {
-      for (let k = 1; !signal.aborted; k++) {
+      for (let k = 0, n = 0; !signal.aborted; ) {
         await Agent.yielded(run, own, asking);
         const seen: Entry[] = [];
-        const sent = Agent.request(wire, run, key, make, cost, seen);
-        const stopped = new Promise<null>((done) => signal.addEventListener("abort", () => done(null), { once: true }));
-        const got = await Promise.race([sent, stopped]);
+        const got = await Agent.race(Agent.request(wire, run, key, make, cost, seen), signal);
         if (got === null) {
           return Agent.fail("stopped", seen);
         }
         const { res, step } = got;
+        const limit = step.stop === "limit";
+        k += step.stop === "busy" ? 1 : 0;
+        n += limit ? 1 : 0;
         if (step.stop === "down") {
           console.error(model + ": " + step.why.slice(0, 300));
         }
-        if (step.stop !== "busy" || k >= TRIES) {
+        if (!limit && (step.stop !== "busy" || k >= TRIES)) {
           return step.stop === "busy" ? { ...step, stop: "down" } : step;
         }
         if (!asking && own !== model && (ROOMS.get(own)?.busy ?? 0) > 0) {
@@ -260,9 +278,14 @@ export namespace Agent {
           asking = true;
         }
         const after = Number(res?.headers.get("retry-after") ?? "");
-        const wait = after > 0 ? after : 2 ** k;
-        run.on({ $: "Entry", kind: "mind", text: "The AI service is busy: asking again in " + wait + " s." });
-        await Machine.nap(wait * 1000, signal);
+        const { ms, known } = limit ? Agent.limit_wait(res, n, run.ask.patient ? AGAIN : LIMIT) : { ms: (after > 0 ? after : 2 ** k) * 1e3, known: false };
+        if (limit && ms >= LONG) {
+          await Agent.park(run, ms, known, !parked);
+          parked = true;
+          continue;
+        }
+        run.on({ $: "Entry", kind: "mind", text: "The AI service is busy: asking again in " + Math.ceil(ms / 1e3) + " s." });
+        await Machine.nap(ms, signal);
       }
       return Agent.fail("stopped", []);
     } finally {
@@ -270,6 +293,75 @@ export namespace Agent {
         Agent.free(model, own);
       }
     }
+  }
+
+  // a promise's value, or null once `signal` aborts; its listener gone
+  // either way (a call at a usage limit asks again without end)
+  export function race<T>(go: Promise<T>, signal: AbortSignal): Promise<T | null> {
+    let drop = () => {};
+    const stopped = new Promise<null>((done) => {
+      const stop = () => done(null);
+      signal.addEventListener("abort", stop, { once: true });
+      drop = () => signal.removeEventListener("abort", stop);
+    });
+    return Promise.race([go, stopped]).finally(drop);
+  }
+
+  // how long a call waits at its `n`th usage limit in a row: the reset
+  // told (from TRIES on, at least the doubling), else a doubling up to
+  // `pace`; known: it waits for the reset told
+  export function limit_wait(res: Response | null, n: number, pace: number): { ms: number; known: boolean } {
+    const now = Date.now();
+    const told = Agent.reset(res, now);
+    const back = Math.min(2 ** n * 1e3, pace);
+    const ms = told === null ? back : n < TRIES ? told - now : Math.max(told - now, back);
+    return { ms, known: told !== null && ms === told - now };
+  }
+
+  // a call waits `ms` for its usage limit, told till when (Limit), its
+  // thought logged if `say`; a stop, a message sent or a wake ends it
+  export async function park(run: Run, ms: number, known: boolean, say: boolean): Promise<void> {
+    const wake = new AbortController();
+    const end = () => wake.abort();
+    run.poke = end;
+    run.abort.signal.addEventListener("abort", end, { once: true });
+    if (run.abort.signal.aborted) {
+      end();
+    }
+    run.on({ $: "Limit", limit: { until: Date.now() + ms, known } });
+    if (say) {
+      run.on({ $: "Entry", kind: "mind", text: "The AI service reached a usage limit: asking again in " + Agent.span(ms) + "." });
+    }
+    try {
+      await Machine.nap(ms, wake.signal);
+    } finally {
+      run.abort.signal.removeEventListener("abort", end);
+      run.poke = () => {};
+      run.on({ $: "Limit", limit: null });
+    }
+  }
+
+  // a wait as people read it: "5 min", "3 h 20 min"
+  export function span(ms: number): string {
+    const min = Math.max(1, Math.round(ms / 60e3));
+    return min < 60 ? min + " min" : Math.floor(min / 60) + " h" + (min % 60 > 0 ? " " + (min % 60) + " min" : "");
+  }
+
+  // when a usage limit resets, as the vendor tells it (ms since the epoch;
+  // null: not told, past, or too far for a timer): its retry-after
+  // (seconds or a date), else the latest of its ratelimit headers' resets
+  // (Anthropic's anthropic-ratelimit-*-reset, a date or epoch seconds;
+  // OpenAI's x-ratelimit-reset-*, a span like "6m0s")
+  export function reset(res: Response | null, now: number): number | null {
+    const UNIT: Record<string, number> = { h: 3600e3, m: 60e3, s: 1e3, ms: 1 };
+    const at = (name: string, v: string): number =>
+      name.startsWith("x-") ? now + [...v.matchAll(/([\d.]+)(ms|h|m|s)/g)].reduce((t, m) => t + Number(m[1]) * UNIT[m[2]], 0)
+      : /^\d+(\.\d+)?$/.test(v.trim()) ? (name === "retry-after" ? now : 0) + Number(v) * 1e3
+      : Date.parse(v);
+    const ok = (t: number) => t > now && t - now < 2 ** 31;
+    const told = [...(res?.headers ?? [])].filter(([name]) => /^(retry-after|anthropic-ratelimit-.+-reset|x-ratelimit-reset-.+)$/.test(name)).map(([name, v]) => [name, at(name, v)] as const).filter(([, t]) => ok(t));
+    const after = told.find(([name]) => name === "retry-after");
+    return after?.[1] ?? (told.length > 0 ? Math.max(...told.map(([, t]) => t)) : null);
   }
 
   export function room(key: string): Room {
@@ -313,10 +405,7 @@ export namespace Agent {
       if (room === undefined || run.abort.signal.aborted) {
         return;
       }
-      await new Promise<void>((ok) => {
-        room.wait.push(ok);
-        run.abort.signal.addEventListener("abort", () => ok(), { once: true });
-      });
+      await Agent.race(new Promise<void>((ok) => room.wait.push(ok)), run.abort.signal);
     }
   }
 
@@ -369,8 +458,10 @@ export namespace Agent {
         signal  : run.ask.bill ? idle.signal : AbortSignal.any([run.abort.signal, idle.signal]),
         timeout : false,
       } as RequestInit);
-      const why = res.ok && res.body ? "" : "HTTP " + res.status + ": " + Agent.reason(await res.text());
-      step = why ? Agent.fail(why, [], Agent.passing(res) ? "busy" : "down") : await Agent.stream(wire, run, res.body!, timer, seen, st, flight.begun, read);
+      const text = res.ok && res.body ? "" : await res.text();
+      const why = res.ok && res.body ? "" : "HTTP " + res.status + ": " + Agent.reason(text);
+      const stop = Agent.limited(res, text) ? "limit" : Agent.passing(res) ? "busy" : "down";
+      step = why ? Agent.fail(why, [], stop) : await Agent.stream(wire, run, res.body!, timer, seen, st, flight.begun, read);
     } catch (err: any) {
       step = Agent.fail(err.message, [], "busy");
     }
@@ -406,6 +497,12 @@ export namespace Agent {
     }
   }
 
+  // a refusal a usage limit's reset ends: a 429, but OpenAI's
+  // insufficient_quota (credit gone)
+  export function limited(res: Response, body: string): boolean {
+    return res.status === 429 && !body.includes("insufficient_quota");
+  }
+
   export function passing(res: Response): boolean {
     const should = res.headers.get("x-should-retry");
     const busy = [408, 409, 429].includes(res.status) || res.status >= 500;
@@ -432,7 +529,7 @@ export namespace Agent {
         if (wire.read(st, ev, on)) {
           read.done = true;
           const step = wire.step(st, ask);
-          return step.stop === "fail" || step.stop === "busy" ? Agent.fail(step.why, seen, step.stop) : step;
+          return step.stop === "fail" || step.stop === "busy" || step.stop === "limit" ? Agent.fail(step.why, seen, step.stop) : step;
         }
       }
       return Agent.fail("the stream ended early", seen, "busy");
@@ -442,7 +539,7 @@ export namespace Agent {
   }
 
   export function fail(why: string, seen: Entry[], stop: Step["stop"] = "lost"): Step {
-    const mark = "\n[cut off: " + (stop === "busy" ? BUSY : why).slice(0, 300) + "]";
+    const mark = "\n[cut off: " + (stop === "busy" || stop === "limit" ? BUSY : why).slice(0, 300) + "]";
     const entries = seen.filter((e) => e.text.trim()).map((e) => ({ kind: e.kind, text: e.text.trim() + mark }));
     return { out: [], uses: [], entries, stop, why, note: "" };
   }

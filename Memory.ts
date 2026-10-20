@@ -729,13 +729,17 @@ export namespace Memory {
   // thoughts; one after a line too long adds only its size and where the
   // limit cuts it (`over`): never more than the first and that note. No
   // line (a refusal: its input's doing): its source clipped; a try cut
-  // (a pause, a stop) or refused by its payer throws, unless a line came
+  // (a pause, a stop) or refused by its payer throws, unless a line came;
+  // one a deploy cut as it waited for a usage limit builds anew (pump)
   export async function build(mem: Memory, l: number, i: number, text: string, call: Call | null): Promise<void> {
     const task = { text: Memory.task(l, i) + text + "\n</input>", mark: false };
     const upto = Math.min(Memory.ctx(l, i), Memory.first(mem, 0, Memory.side(mem, l, i)));
     const blocks = [...Memory.view(mem, upto, mem.seen.parts), task];
     const lines: string[] = [];
     let end = await Memory.compact(mem, l, i, call ?? Memory.ask(mem, l, i, text, blocks));
+    if (end.cut) {
+      return;
+    }
     while (end.ok && end.text.trim() !== "") {
       const line = end.text.trim();
       lines.push(line);

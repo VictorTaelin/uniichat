@@ -8,8 +8,8 @@
 // call shares (tools, system) stays cached whatever its view does, so a
 // view written anew writes only itself. A stream builds blocks from
 // pieces; tool_use and end_turn end a step, pause_turn asks again, an
-// error event is busy. It pings while the model thinks, so 5 silent
-// minutes mean it is dead.
+// error event is busy (a rate_limit_error a usage limit). It pings while
+// the model thinks, so 5 silent minutes mean it is dead.
 
 import type { Ask, Img } from "./AskAI.ts";
 import { Agent, type Emit, type Entry, type Item, type Step, type Tool, type Use, type Wire } from "./Agent.ts";
@@ -229,7 +229,7 @@ export namespace Anthropic {
     const note = slow ? "ran at " + st.use.speed + " speed" : "";
     const step: Step = { out, uses, entries: Anthropic.entries(out), stop: "done", why: "", note };
     if (st.error) {
-      return { ...step, stop: "busy", why: st.error.type + ": " + st.error.message };
+      return { ...step, stop: st.error.type === "rate_limit_error" ? "limit" : "busy", why: st.error.type + ": " + st.error.message };
     }
     switch (st.stop) {
       case "end_turn":

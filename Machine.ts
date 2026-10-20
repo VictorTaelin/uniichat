@@ -296,14 +296,17 @@ export namespace Machine {
   }
 
   // ms, or till the signal aborts: none, if it already did (an abort
-  // event comes once)
+  // event comes once); its listener gone either way (a call at a usage
+  // limit naps without end on one signal)
   export function nap(ms: number, signal: AbortSignal): Promise<void> {
     return new Promise((ok) => {
-      const timer = setTimeout(ok, signal.aborted ? 0 : ms);
-      signal.addEventListener("abort", () => {
+      const done = () => {
         clearTimeout(timer);
+        signal.removeEventListener("abort", done);
         ok();
-      });
+      };
+      const timer = setTimeout(done, signal.aborted ? 0 : ms);
+      signal.addEventListener("abort", done, { once: true });
     });
   }
 

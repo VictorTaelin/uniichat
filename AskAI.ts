@@ -2,8 +2,9 @@
 // =====
 // One way to call a model: a system prompt and a user message in;
 // Deltas (live pieces) and an Entry per finished message out. send()
-// hands the agent a message at its next chance, stop() aborts, `left`
-// holds those never taken. Every vendor is an API run in our loop
+// hands the agent a message at its next chance, stop() aborts, wake()
+// ends a wait for a usage limit (Agent.park), `left` holds those never
+// taken. Every vendor is an API run in our loop
 // (Agent.ts). A patient call (a summary's) asks again, AGAIN after each
 // try nothing answered (the vendor down or refusing it, as when the API
 // key's credit is gone; our setup failing), till
@@ -101,26 +102,35 @@ type Cached = { until: number; ready: Promise<void> | null };
 // a request's place in single flight: its response began; it ended
 export type Flight = { begun: () => void; end: () => void };
 
+// a call waiting for its vendor's usage limit: till when (ms since the
+// epoch), and whether the vendor told it (else it only asks again then)
+export type Parked = { until: number; known: boolean };
+
 export type Event =
   | { $: "Delta"; kind: Kind; text: string; fresh?: boolean }
-  | { $: "Entry"; kind: Kind; text: string; of?: string }; // of: the tool call it is or answers (a call is logged with its result)
+  | { $: "Entry"; kind: Kind; text: string; of?: string } // of: the tool call it is or answers (a call is logged with its result)
+  | { $: "Limit"; limit: Parked | null };                 // waiting for a usage limit, or no longer
 
 // stop: who ended a call that failed (Agent.ts): the model (`fail`: it
 // answered, so the failure is its input's doing, a refusal or a stop
 // reason; asked again, it fails alike), we (`lost`: a stop, its payer's
-// refusal or cut), the vendor (`down`), or none (our setup threw)
+// refusal or cut), the vendor (`down`), or none (our setup threw); cut:
+// a deploy cut it as it waited for a usage limit (Server.ts Main.away),
+// so where its chat went it goes on, as after a restart
 export type End = {
   ok    : boolean;
   text  : string;
   left  : Say[];
   note? : string;
   stop? : "fail" | "lost" | "down";
+  cut?  : boolean;
 };
 
 // one try at a vendor
 export type Try = {
   send : (say: Say) => void;
   stop : () => void;
+  wake : () => void;
   done : Promise<End>;
 };
 
@@ -137,7 +147,7 @@ export type Call = Try & { move: (to: Sink) => void };
 // how long a patient call waits to ask again: short enough that summaries
 // go on within a minute of an outage's end, long enough not to flood the
 // vendor meanwhile (its JOBS a side per chat each asking once a minute)
-const AGAIN = 60e3;
+export const AGAIN = 60e3;
 
 // how long a vendor keeps a cache entry unused, in ms
 export const TTL: Record<Vendor, number> = {
@@ -161,7 +171,7 @@ export namespace AskAI {
       halt.abort();
       call.stop();
     };
-    const [out, feed] = AskAI.tie(on, ask.bill, send, stop);
+    const [out, feed] = AskAI.tie(on, ask.bill, send, stop, () => call.wake());
     const tie = { ...ask, bill: feed.bill };
     let call = AskAI.start(tie, feed.on);
     const run = async (): Promise<End> => {
@@ -185,12 +195,12 @@ export namespace AskAI {
 
   // a call fed by `feed` (its tries, or another process: Server.ts),
   // which passes all to the call's sink: first `on`, `bill` and done
-  export function tie(on: Sink["on"], bill: Bill | undefined, send: Try["send"], stop: Try["stop"]): [Call, Sink] {
+  export function tie(on: Sink["on"], bill: Bill | undefined, send: Try["send"], stop: Try["stop"], wake: Try["wake"] = () => {}): [Call, Sink] {
     const { promise, resolve } = Promise.withResolvers<End>();
     let to: Sink = { on, bill, end: resolve };
     const pay: Bill = (cost, cap) => to.bill!(cost, cap);
     const feed: Sink = { on: (ev) => to.on(ev), bill: bill && pay, end: (end) => to.end(end) };
-    return [{ send, stop, done: promise, move: (sink) => (to = sink) }, feed];
+    return [{ send, stop, wake, done: promise, move: (sink) => (to = sink) }, feed];
   }
 
   // one try; a vendor that throws gives a failed one
@@ -200,7 +210,7 @@ export namespace AskAI {
     } catch (err: any) {
       const end = AskAI.end(err.message);
       const send = (say: Say) => end.left.push(say);
-      return { send, stop: () => {}, done: Promise.resolve(end) };
+      return { send, stop: () => {}, wake: () => {}, done: Promise.resolve(end) };
     }
   }
 

@@ -915,6 +915,7 @@ function view_new() {
     bills: false,
     credits: null,
     importing: null,
+    limits: {},
     parts: [],
     turn: Infinity,
     fold: null,
@@ -1102,10 +1103,19 @@ function view_tail(v, live = view_stream(v)) {
   const load = v.page === null && v.importing !== null ? [Cap(progress_show(v, v.importing))] : [];
   const said = v.page === null && !v.up ? v.out.flatMap((p) => entry_rows(null, "user", p.said)) : [];
   const kept = said.length > 0 ? [...said, Cap(UNSENT)] : [];
+  const limit = v.limits[v.page === null ? TURN : v.page.name];
+  if (limit !== undefined) {
+    return [...rows, Cap(limit_show(limit)), ...kept, ...load];
+  }
   if (v.page !== null || rows.length > 0 || v.wait === "") {
     return [...rows, ...kept, ...load];
   }
   return [Cap(v.wait === SUMMARIES ? SUMS : "waiting for " + v.wait + "…"), ...kept, ...load];
+}
+function limit_show(limit, now = Date.now()) {
+  const at = new Date(limit.until);
+  const day = at.toDateString() === new Date(now).toDateString() ? {} : { weekday: "short" };
+  return "waiting for the usage limit, " + (limit.known ? "resumes" : "tries again") + " at " + at.toLocaleString(undefined, { ...day, hour: "2-digit", minute: "2-digit" });
 }
 function view_stream(v) {
   return v.page === null ? v.live : v.page.live;
