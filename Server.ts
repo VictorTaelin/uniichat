@@ -2095,7 +2095,8 @@ export namespace Main {
   // (Main.start); one that fails to start leaves that one serving. Its
   // own code changes only on a restart, so a deploy of code that takes
   // the keys otherwise (config.HANDOVER) is refused: its workers would
-  // start on none
+  // start on none. So is each start of a worker on such code, a dead
+  // one's again too: then the server ends (1), to be started anew on it
   export function supervise(port: number, run: string[]): void {
     const cloud = Cloud.open(() => {}, () => {}, async () => null);
     const workers: Bun.Subprocess[] = [];
@@ -2116,7 +2117,17 @@ export namespace Main {
         }
       }
     };
+    const end = (code: number) => {
+      Main.leaving = true;
+      all.forEach((w) => w.kill());
+      Promise.all([...all].map((w) => w.exited)).then(() => process.exit(code));
+    };
     const start = (k: number) => {
+      if (!Main.hands(import.meta.dir + "/Config.ts")) {
+        console.error("unii: worker " + k + " not started: the code here takes the keys otherwise than this server hands them (Config.ts HANDOVER); the server ends, to be started again on it");
+        end(1);
+        return;
+      }
       const env = { ...process.env, UNII_WORKER: String(k), BUN_CONFIG_MAX_HTTP_REQUESTS: String(FETCHES) };
       const ipc = (msg: any, proc: Bun.Subprocess) => hear(k, proc, msg);
       // a pipe, which holds the keys only until the worker reads them
@@ -2147,11 +2158,7 @@ export namespace Main {
         return new Response(null, { headers: { "x-unii-worker": "127.0.0.1:" + (port + 1 + k) } });
       },
     });
-    const stop = () => {
-      Main.leaving = true;
-      all.forEach((w) => w.kill());
-      Promise.all([...all].map((w) => w.exited)).then(() => process.exit(0));
-    };
+    const stop = () => end(0);
     for (const sig of ["SIGTERM", "SIGINT"]) {
       process.on(sig, stop);
     }
@@ -2166,10 +2173,13 @@ export namespace Main {
   }
 
   // whether the Config.ts at `path` takes a worker's keys as this one
-  // hands them (its HANDOVER line alike)
+  // hands them: its code (as Bun reads it: no comments, nor types, one
+  // way of writing each line) exports one HANDOVER alike
   export function hands(path: string): boolean {
     try {
-      return new RegExp("^export const HANDOVER = " + config.HANDOVER + ";$", "m").test(fs.readFileSync(path, "utf8"));
+      const code = new Bun.Transpiler({ loader: "ts" }).transformSync(fs.readFileSync(path, "utf8"));
+      const found = [...code.matchAll(/^export const HANDOVER = (.*);$/gm)].map((m) => m[1]);
+      return found.length === 1 && found[0] === String(config.HANDOVER);
     } catch {
       return false;
     }

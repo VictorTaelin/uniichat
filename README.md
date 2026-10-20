@@ -108,8 +108,9 @@ environment (not on the command line, which history keeps),
 
 and the server seals them in `~/.unii/keys.enc` (AES-256-GCM, by a key
 scrypt makes of the passphrase; 600). Then drop them from wherever they
-were set (`unset` them). Each later start needs only the passphrase,
-from the first of:
+were set (`unset` them) and start the server again: the one that sealed
+them still shows them in its `/proc/<pid>/environ` while it runs. Each
+later start needs only the passphrase, from the first of:
 
 - `UNII_PASSPHRASE`. Taken out of the environment once read, but the
   server's `/proc/<pid>/environ` still shows it, to every program run
@@ -129,7 +130,12 @@ This guards the keys at rest: a copy or backup of ~/.unii, a config
 file that leaks. Not from code running as you while the server is up
 (an agent's shell, if it runs as you): that can read the server's
 memory (ptrace) or what /proc shows of it, and the passphrase where it
-is kept. Run the server as a user of its own for that.
+is kept. Run the server as a user of its own for that. Nor from what
+leaves its memory: a core dump of it (if it crashes) or swap holds the
+keys in plain text. Turn core dumps off where it runs (`ulimit -c 0`
+before starting it, or `LimitCORE=0` in its systemd unit; with
+systemd-coredump, `Storage=none` in /etc/systemd/coredump.conf), and
+encrypt swap or run without it.
 
 With only an OpenAI key, set `vendors`, `pick` and `compactor` to
 `openai-api` models, e.g. `UNII_VENDORS=openai-api

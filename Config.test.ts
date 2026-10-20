@@ -21,7 +21,7 @@ afterAll(() => DIRS.forEach((dir) => fs.rmSync(dir, { recursive: true, force: tr
 // and what it would hand a worker
 const READ = `
 const config = await import(${JSON.stringify(import.meta.dir + "/Config.ts")});
-const left = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "UNII_PASSPHRASE", "UNII_PASSPHRASE_FILE"].filter((v) => process.env[v] !== undefined);
+const left = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "UNII_PASSPHRASE", "UNII_PASSPHRASE_FILE", "CREDENTIALS_DIRECTORY"].filter((v) => process.env[v] !== undefined);
 console.log(JSON.stringify({ keys: config.KEYS, left, hand: JSON.parse(config.config_hand()) }));
 process.exit(0);
 `;
@@ -165,6 +165,10 @@ test("a damaged keys.enc says so, apart from a wrong passphrase", () => {
     ["iv of 4 bytes, not 12", JSON.stringify({ ...json, iv: "AAAAAA==" })],
     ["tag of 3 bytes, not 16", JSON.stringify({ ...json, tag: "AAAA" })],
     ["no scrypt cost it can use", JSON.stringify({ ...json, N: 2 ** 30 })],
+    // 128 N r is 1 GiB just, but scrypt takes some more
+    ["no scrypt cost it can use", JSON.stringify({ ...json, N: 2 ** 20, r: 8 })],
+    // a cost kept in part: not of the first kind
+    ["no scrypt cost it can use", JSON.stringify({ ...json, kdf: undefined, r: undefined, p: undefined })],
     ["no scrypt cost it can use", JSON.stringify({ ...json, N: 1000 })],
     ["no scrypt cost it can use", JSON.stringify({ ...json, N: undefined })],
     ["no scrypt cost it can use", JSON.stringify({ ...json, kdf: "argon2" })],
@@ -191,6 +195,8 @@ test("a start on a damaged keys.enc fails saying so, not 'wrong passphrase'", as
   expect(got.code).not.toBe(0);
   expect(got.said).toContain("keys.enc is damaged (not JSON)");
   expect(got.said).not.toContain("not sealed by that passphrase");
+  // said alone: no stack, nor Bun's lines of source
+  expect(got.said.trim()).toBe("unii: " + dir + "/keys.enc is damaged (not JSON): restore it, or delete it and seal the keys anew");
   fs.writeFileSync(dir + "/keys.enc", JSON.stringify({ ...JSON.parse(config.config_seal({}, "pw")), v: 7 }));
   const newer = await start(dir, { UNII_PASSPHRASE: "pw" });
   expect(newer.code).not.toBe(0);
@@ -226,6 +232,8 @@ test("the passphrase from a file, or a systemd credential: the same as typed or 
   const cred = await start(dir, { CREDENTIALS_DIRECTORY: creds });
   expect(cred.code).toBe(0);
   expect(cred.out.keys.anthropic).toBe("sk-ant-f");
+  // the dir's name leaves the environment, as the variables do
+  expect(cred.out.left).toEqual([]);
   // one others can read: still read, with a warning
   fs.writeFileSync(file, "pass phrase\n");
   fs.chmodSync(file, 0o644);
@@ -257,9 +265,100 @@ test("first starts at once, each with a key of its own: keys.enc keeps them all"
   }
 });
 
-test("sealed under umask 000: keys.enc is 600 still", async () => {
+test("sealed under umask 000: keys.enc is 600 still, and keys.lock", async () => {
   const dir = fresh();
   const got = await start(dir, { ANTHROPIC_API_KEY: "sk-a", UNII_PASSPHRASE: "pw" }, "", "000");
   expect(got.code).toBe(0);
   expect(fs.statSync(dir + "/keys.enc").mode & 0o777).toBe(0o600);
+  expect(fs.statSync(dir + "/keys.lock").mode & 0o777).toBe(0o600);
+  // one an older start left open to others is closed
+  fs.chmodSync(dir + "/keys.lock", 0o644);
+  await start(dir, { OPENAI_API_KEY: "sk-o", UNII_PASSPHRASE: "pw" });
+  expect(fs.statSync(dir + "/keys.lock").mode & 0o777).toBe(0o600);
+});
+
+test("config_write writes the whole file, however few bytes each write takes", () => {
+  const dir = fresh();
+  const path = dir + "/keys.enc";
+  const text = config.config_seal({ anthropic: "sk-ant-long-" + "x".repeat(500), apns: "ü€" }, "pw");
+  const fds = () => fs.readdirSync("/proc/self/fd").length;
+  const before = fds();
+  // a write that takes 1 to 3 bytes at a time
+  let calls = 0;
+  const short = (fd: number, buf: Buffer, at: number, len: number) => {
+    calls++;
+    return fs.writeSync(fd, buf, at, Math.min(len, 1 + (calls % 3)));
+  };
+  config.config_write(path, text, short as any);
+  expect(fs.readFileSync(path, "utf8")).toBe(text);
+  expect(calls).toBeGreaterThan(text.length / 3);
+  expect(config.config_open(fs.readFileSync(path, "utf8"), "pw")?.apns).toBe("ü€");
+  expect(fs.readdirSync(dir)).toEqual(["keys.enc"]);
+  // one that stops taking any: an error; the file as it was, no temp
+  // left, and no descriptor
+  const stuck = (fd: number, buf: Buffer, at: number, len: number) => (at < 40 ? fs.writeSync(fd, buf, at, Math.min(len, 40 - at)) : 0);
+  expect(() => config.config_write(path, config.config_seal({ anthropic: "sk-other" }, "pw"), stuck as any)).toThrow("took no more bytes (40 of");
+  expect(fs.readFileSync(path, "utf8")).toBe(text);
+  expect(fs.readdirSync(dir)).toEqual(["keys.enc"]);
+  // one that fails
+  const fail = () => {
+    throw Object.assign(new Error("no space left"), { code: "ENOSPC" });
+  };
+  expect(() => config.config_write(path, "{}", fail as any)).toThrow("no space left");
+  expect(fs.readFileSync(path, "utf8")).toBe(text);
+  expect(fs.readdirSync(dir)).toEqual(["keys.enc"]);
+  expect(fds()).toBe(before);
+});
+
+// a keys.enc as the first (a832961) sealed it: v 1, no kdf, N, r nor p,
+// scrypt at N 2^15, r 8, p 1
+function first_box(pass: string, keys: object): string {
+  const salt = crypto.randomBytes(16);
+  const iv = crypto.randomBytes(12);
+  const key = crypto.scryptSync(pass.normalize("NFC"), salt, 32, { N: 2 ** 15, r: 8, p: 1, maxmem: 2 ** 26 });
+  const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+  const data = Buffer.concat([cipher.update(JSON.stringify(keys), "utf8"), cipher.final()]);
+  const b64 = (b: Buffer) => b.toString("base64");
+  return JSON.stringify({ v: 1, salt: b64(salt), iv: b64(iv), tag: b64(cipher.getAuthTag()), data: b64(data) }) + "\n";
+}
+
+test("a keys.enc of the first kind (no cost kept) opens by N 2^15, and is sealed anew on a start", async () => {
+  const text = first_box("pass phrase", { anthropic: "sk-first", resend: "re_first" });
+  expect(config.config_first(text)).toBe(true);
+  expect(config.config_first(config.config_seal({}, "pw"))).toBe(false);
+  expect(config.config_first("not json")).toBe(false);
+  expect(config.config_open(text, "pass phrase")).toEqual({ anthropic: "sk-first", resend: "re_first" });
+  expect(config.config_open(text, "wrong")).toBeNull();
+
+  const dir = fresh();
+  fs.writeFileSync(dir + "/keys.enc", text, { mode: 0o600 });
+  // the wrong passphrase: so said, and the file as it was
+  const wrong = await start(dir, { UNII_PASSPHRASE: "wrong" });
+  expect(wrong.code).not.toBe(0);
+  expect(wrong.said).toContain("is not sealed by that passphrase");
+  expect(wrong.said).not.toContain("damaged");
+  expect(fs.readFileSync(dir + "/keys.enc", "utf8")).toBe(text);
+  // the right one: its keys, and the file sealed anew, with its cost
+  const right = await start(dir, { UNII_PASSPHRASE: "pass phrase" });
+  expect(right.code).toBe(0);
+  expect(right.out.keys).toEqual({ anthropic: "sk-first", openai: "", resend: "re_first", apns: "" });
+  expect(right.said).toContain("sealed " + dir + "/keys.enc anew");
+  const now = fs.readFileSync(dir + "/keys.enc", "utf8");
+  const seal = JSON.parse(now);
+  expect([seal.v, seal.kdf, seal.N, seal.r, seal.p]).toEqual([1, "scrypt", 2 ** 17, 8, 1]);
+  expect(config.config_first(now)).toBe(false);
+  expect(fs.statSync(dir + "/keys.enc").mode & 0o777).toBe(0o600);
+  expect(fs.readdirSync(dir).filter((name) => name.startsWith("keys.enc"))).toEqual(["keys.enc"]);
+  // then read as any: no more sealing
+  const again = await start(dir, { UNII_PASSPHRASE: "pass phrase" });
+  expect(again.out.keys).toEqual(right.out.keys);
+  expect(again.said).not.toContain("sealed");
+  expect(fs.readFileSync(dir + "/keys.enc", "utf8")).toBe(now);
+  // a key given beside one of the first kind: sealed in, the rest kept
+  const other = fresh();
+  fs.writeFileSync(other + "/keys.enc", text, { mode: 0o600 });
+  const add = await start(other, { OPENAI_API_KEY: "sk-o", UNII_PASSPHRASE: "pass phrase" });
+  expect(add.said).toContain("sealed openai in");
+  expect(add.out.keys).toEqual({ anthropic: "sk-first", openai: "sk-o", resend: "re_first", apns: "" });
+  expect(JSON.parse(fs.readFileSync(other + "/keys.enc", "utf8")).N).toBe(2 ** 17);
 });

@@ -86,3 +86,42 @@ test("a turn's wait names the model it runs on, not one picked since", async () 
   expect(out.picked).toBe(out.to);
   expect(out.after).toBe(out.model);
 });
+
+// whether a deploy's Config.ts takes the workers' keys as this server
+// hands them (Main.hands): its code's HANDOVER, not a comment's, however
+// written. Its own process, for its own UNII_DIR
+const HANDS = `
+const { Main } = await import(${JSON.stringify(import.meta.dir + "/Server.ts")});
+const fs = require("node:fs");
+const cases = JSON.parse(process.argv[2]);
+console.log(JSON.stringify(cases.map((code, k) => {
+  const path = process.env.UNII_DIR + "/Config" + k + ".ts";
+  fs.writeFileSync(path, code);
+  return Main.hands(path);
+})));
+process.exit(0);
+`;
+
+test("Main.hands: a deploy's Config.ts hands over alike by its code, not its comments", async () => {
+  const dir = fs.mkdtempSync(os.tmpdir() + "/unii-server-");
+  fs.writeFileSync(dir + "/hands.ts", HANDS);
+  const ours = fs.readFileSync(import.meta.dir + "/Config.ts", "utf8");
+  const cases: [string, boolean][] = [
+    [ours, true],
+    ["export const HANDOVER = 1;", true],
+    ["export   const HANDOVER: number=1 // the keys on stdin\n", true],
+    ["export const HANDOVER = 0x1", true],
+    ["/* export const HANDOVER = 1; */\nexport const HANDOVER = 2;", false],
+    ["// export const HANDOVER = 1;\n", false],
+    ["const s = \"export const HANDOVER = 1;\";", false],
+    ["export const HANDOVER = 1;\nexport const HANDOVER = 2;", false],
+    ["export const HANDOVER = 2;", false],
+    ["export const HANDOVER = (", false],
+    ["", false],
+  ];
+  const proc = Bun.spawn([process.execPath, dir + "/hands.ts", JSON.stringify(cases.map(([code]) => code))], { env: { ...process.env, UNII_DIR: dir }, stdout: "pipe", stderr: "inherit" });
+  const out = JSON.parse((await new Response(proc.stdout).text()).trim().split("\n").at(-1) ?? "[]");
+  expect(out).toEqual(cases.map(([, ok]) => ok));
+  expect(await proc.exited).toBe(0);
+  fs.rmSync(dir, { recursive: true, force: true });
+});

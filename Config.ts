@@ -18,7 +18,7 @@
 // then it can leave the environment. A worker gets the keys from its
 // supervisor (config_hand), not the file. Sealed, the keys are safe at
 // rest (a copy, a backup); not from code running as the server's user
-// while it runs.
+// while it runs, nor in a core dump or swap of it.
 
 import { Database } from "bun:sqlite";
 import * as crypto from "node:crypto";
@@ -75,8 +75,11 @@ const CREDENTIAL = "unii-passphrase";
 
 // scrypt's cost when sealing (some 0.2 s and 128 MiB), kept in keys.enc
 // beside the salt, so it may be raised and older files still open; one
-// read is bounded by KDF_MAX (memory: 128 N r bytes, here 1 GiB)
+// read is bounded by KDF_MAX (all the memory scrypt takes: config_mem,
+// here 1 GiB). The first keys.enc (no cost kept) had KDF_FIRST: one is
+// read by it, then sealed anew by KDF
 const KDF = { N: 2 ** 17, r: 8, p: 1 };
+const KDF_FIRST = { N: 2 ** 15, r: 8, p: 1 };
 const KDF_MAX = 2 ** 30;
 
 // how a worker gets the keys: on its stdin, as JSON (config_hand). A
@@ -85,7 +88,7 @@ const KDF_MAX = 2 ** 30;
 // environment, which holds them no more
 export const HANDOVER = 1;
 
-export const KEYS: Record<string, string> = config_keys();
+export const KEYS: Record<string, string> = config_start();
 
 // Config
 // ======
@@ -122,14 +125,31 @@ function config_key(name: string): string {
   return key;
 }
 
+// config_keys, or the server ends saying why it can't start on them (no
+// stack: the passphrase or keys.enc is wrong, not the code)
+function config_start(): Record<string, string> {
+  try {
+    return config_keys();
+  } catch (err) {
+    if (err instanceof Error && err.message.startsWith("config: ")) {
+      console.error("unii: " + err.message.slice("config: ".length));
+      process.exit(1);
+    }
+    throw err;
+  }
+}
+
 // the keys: a worker's, as its supervisor hands them; else the
 // environment's, over those sealed in SEALED, sealed in too when they
-// add or change one (none sealed and no passphrase: the environment's
-// alone)
+// add or change one, or it is of the first kind (none sealed and no
+// passphrase: the environment's alone). The passphrase's variables and
+// systemd's credentials dir leave the environment too: no worker, nor
+// program an agent runs, needs them
 function config_keys(): Record<string, string> {
   const env = Object.fromEntries(Object.entries(VARS).map(([name, v]) => [name, config_key(v)]));
   const pass = config_key("UNII_PASSPHRASE");
   const file = config_key("UNII_PASSPHRASE_FILE");
+  const creds = config_key("CREDENTIALS_DIRECTORY");
   if (process.env.UNII_WORKER !== undefined) {
     return { ...env, ...JSON.parse(fs.readFileSync(0, "utf8") || "{}") };
   }
@@ -138,23 +158,27 @@ function config_keys(): Record<string, string> {
   if (read === null && Object.keys(given).length === 0) {
     return env;
   }
-  const word = config_word(pass, file, read !== null);
+  const word = config_word(pass, file, creds, read !== null);
   if (word === null) {
     return env;
   }
   const old = read === null ? {} : config_unseal(read, word);
   const changed = Object.keys(given).some((name) => old[name] !== given[name]);
-  const keys = changed ? config_store(word, given, read, old) : { ...old, ...given };
+  const first = read !== null && config_first(read);
+  const keys = changed || first ? config_store(word, given, read, old) : { ...old, ...given };
   return Object.fromEntries(Object.keys(VARS).map((name) => [name, keys[name] ?? ""]));
 }
 
-// seals in the keys given that keys.enc lacks or holds otherwise, over
-// it as read again holding SEALING (an exclusive SQLite transaction: the
-// system frees it if the holder dies), so one start at a time reads,
-// adds to and writes it: two first starts at once keep both's keys. Its
-// keys then (`read` as it was, sealing `old`)
+// seals in the keys given that keys.enc lacks or holds otherwise (all,
+// if it is of the first kind), over it as read again holding SEALING (an
+// exclusive SQLite transaction: the system frees it if the holder dies;
+// 600, as keys.enc), so one start at a time reads, adds to and writes
+// it: two first starts at once keep both's keys. Its keys then (`read`
+// as it was, sealing `old`)
 function config_store(word: string, given: Record<string, string>, read: string | null, old: Record<string, string>): Record<string, string> {
   fs.mkdirSync(DIR, { recursive: true, mode: 0o700 });
+  fs.closeSync(fs.openSync(SEALING, "a", 0o600));
+  fs.chmodSync(SEALING, 0o600);
   const db = new Database(SEALING, { create: true });
   try {
     db.run("PRAGMA busy_timeout = 60000");
@@ -163,9 +187,15 @@ function config_store(word: string, given: Record<string, string>, read: string 
     const was = now === null ? {} : now === read ? old : config_unseal(now, word);
     const keys = { ...was, ...given };
     const news = Object.keys(given).filter((name) => was[name] !== given[name]);
-    if (news.length > 0) {
+    const first = now !== null && config_first(now);
+    if (news.length > 0 || first) {
       config_write(SEALED, config_seal(keys, word));
-      console.log("unii: sealed " + news.join(", ") + " in " + SEALED + "; the environment needs them no more");
+    }
+    if (first) {
+      console.log("unii: sealed " + SEALED + " anew, by this unii's scrypt cost (it was of the first kind, which keeps none)");
+    }
+    if (news.length > 0) {
+      console.log("unii: sealed " + news.join(", ") + " in " + SEALED + "; the environment needs them no more: unset them, and start the server again (its /proc/<pid>/environ holds them while it runs)");
     }
     return keys;
   } finally {
@@ -175,45 +205,66 @@ function config_store(word: string, given: Record<string, string>, read: string 
 
 // writes a file whole or not at all: a temp of this process's alone,
 // made anew (O_EXCL: no link there is followed), 600 whatever the umask,
-// synced, renamed over the file, and the dir synced, so it is on the
-// disk once this returns
-function config_write(path: string, text: string): void {
+// written to the last byte (a write may take only some), synced, closed,
+// renamed over the file, and the dir synced, so it is on the disk once
+// this returns. Where a dir can't be synced (Windows, some file
+// systems), the rename is left to the system to keep. `write`: as
+// fs.writeSync (a test's, to take a few bytes at a time)
+export function config_write(path: string, text: string, write = fs.writeSync): void {
   const dir = path.slice(0, path.lastIndexOf("/"));
   const temp = path + "." + process.pid;
+  const data = Buffer.from(text, "utf8");
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   fs.rmSync(temp, { force: true });
-  const fd = fs.openSync(temp, "wx", 0o600);
+  let done = false;
   try {
-    fs.fchmodSync(fd, 0o600);
-    fs.writeSync(fd, text);
-    fs.fsyncSync(fd);
-    fs.closeSync(fd);
+    const fd = fs.openSync(temp, "wx", 0o600);
+    try {
+      fs.fchmodSync(fd, 0o600);
+      for (let at = 0; at < data.length; ) {
+        const took = write(fd, data, at, data.length - at);
+        if (!(took > 0)) {
+          throw new Error("config: " + temp + " took no more bytes (" + at + " of " + data.length + " written)");
+        }
+        at += took;
+      }
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
     fs.renameSync(temp, path);
-  } catch (err) {
-    fs.rmSync(temp, { force: true });
-    throw err;
-  }
-  const dirfd = fs.openSync(dir, "r");
-  try {
-    fs.fsyncSync(dirfd);
+    done = true;
   } finally {
-    fs.closeSync(dirfd);
+    if (!done) {
+      fs.rmSync(temp, { force: true });
+    }
   }
+  if (process.platform === "win32") {
+    return;
+  }
+  try {
+    const dirfd = fs.openSync(dir, "r");
+    try {
+      fs.fsyncSync(dirfd);
+    } finally {
+      fs.closeSync(dirfd);
+    }
+  } catch {}
 }
 
 // the passphrase: $UNII_PASSPHRASE; else the file $UNII_PASSPHRASE_FILE
-// names; else the systemd credential unii-passphrase (LoadCredential=);
-// else typed, if `ask`; else none. Spaces and newlines at its ends don't
-// count, wherever it comes from (a file's last newline)
-function config_word(pass: string, file: string, ask: boolean): string | null {
+// names; else the systemd credential unii-passphrase (LoadCredential=,
+// in `creds`, $CREDENTIALS_DIRECTORY); else typed, if `ask`; else none.
+// Spaces and newlines at its ends don't count, wherever it comes from (a
+// file's last newline)
+function config_word(pass: string, file: string, creds: string, ask: boolean): string | null {
   if (pass !== "" && file !== "") {
     throw new Error("config: set UNII_PASSPHRASE or UNII_PASSPHRASE_FILE, not both");
   }
   if (pass !== "") {
     return pass;
   }
-  const creds = process.env.CREDENTIALS_DIRECTORY;
-  const cred = creds === undefined ? "" : creds + "/" + CREDENTIAL;
+  const cred = creds === "" ? "" : creds + "/" + CREDENTIAL;
   const path = file !== "" ? config_path(file) : cred !== "" && fs.existsSync(cred) ? cred : "";
   if (path === "") {
     return ask ? config_ask() : null;
@@ -235,8 +286,9 @@ function config_word(pass: string, file: string, ask: boolean): string | null {
 
 // the passphrase, typed at the terminal unseen. Not shown means stty
 // turned echo off; if it can't, no prompt (it would show). Echo is back
-// however the prompt ends; Ctrl-C ends the start (130; so does Enter
-// alone, which prompt() tells not apart)
+// however the prompt ends: the signals are caught before it is turned
+// off; Ctrl-C ends the start (130; so does Enter alone, which prompt()
+// tells not apart)
 function config_ask(): string {
   const why = "config: " + SEALED + " needs its passphrase: set UNII_PASSPHRASE_FILE (or UNII_PASSPHRASE), or start at a terminal";
   if (!process.stdin.isTTY) {
@@ -250,24 +302,35 @@ function config_ask(): string {
       return null;
     }
   };
+  const noecho = new Error(why.replace("or start at a terminal", "as the terminal's echo can't be turned off (stty) to type it unseen"));
   const saved = stty("-g");
-  if (saved === null || saved === "" || stty("-echo") === null) {
-    if (saved) {
-      stty(saved);
-    }
-    throw new Error(why.replace("or start at a terminal", "as the terminal's echo can't be turned off (stty) to type it unseen"));
+  if (saved === null || saved === "") {
+    throw noecho;
   }
-  // a signal makes prompt() return null; then the handler would run
-  const quit = () => {};
+  // a signal, from here on, ends the start once echo is back: one while
+  // the prompt is up makes prompt() return null (the handler runs after)
+  let ended = false;
+  const quit = () => {
+    ended = true;
+  };
   const sigs = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
   sigs.forEach((sig) => process.on(sig, quit));
-  let typed: string | null;
+  let typed: string | null = null;
+  let asked = false;
   try {
-    typed = prompt("unii: passphrase of " + SEALED + ":");
+    if (stty("-echo") === null) {
+      throw noecho;
+    }
+    if (!ended) {
+      asked = true;
+      typed = prompt("unii: passphrase of " + SEALED + ":");
+    }
   } finally {
     stty(saved);
     sigs.forEach((sig) => process.off(sig, quit));
-    process.stdout.write("\n");
+    if (asked) {
+      process.stdout.write("\n");
+    }
   }
   if (typed === null) {
     console.error("unii: no passphrase given");
@@ -279,9 +342,17 @@ function config_ask(): string {
   return typed.trim();
 }
 
+type Cost = { N: number; r: number; p: number };
+
+// the memory scrypt takes at a cost, all told (as BoringSSL counts it:
+// 128 r (N + 2) for V, 128 r p for B)
+function config_mem(cost: Cost): number {
+  return 128 * cost.r * (cost.N + 2 + cost.p);
+}
+
 // the key a passphrase makes with a salt and a cost
-function config_kdf(pass: string, salt: Buffer, cost: { N: number; r: number; p: number }): Buffer {
-  return crypto.scryptSync(pass.normalize("NFC"), salt, 32, { ...cost, maxmem: 2 * 128 * cost.N * cost.r });
+function config_kdf(pass: string, salt: Buffer, cost: Cost): Buffer {
+  return crypto.scryptSync(pass.normalize("NFC"), salt, 32, { ...cost, maxmem: config_mem(cost) });
 }
 
 // keys, by name, sealed by a passphrase: a keys.enc's text (v 1: scrypt
@@ -296,10 +367,46 @@ export function config_seal(keys: Record<string, string>, pass: string): string 
   return JSON.stringify({ v: 1, kdf: "scrypt", ...KDF, salt: b64(salt), iv: b64(iv), tag: b64(tag), data: b64(data) }) + "\n";
 }
 
+// whether a keys.enc's text is of the first kind (v 1, no scrypt cost
+// kept: KDF_FIRST's), to seal anew; not if damaged
+export function config_first(text: string): boolean {
+  try {
+    return config_box(text).first;
+  } catch {
+    return false;
+  }
+}
+
 // the keys a keys.enc's text seals: null if not by that passphrase, or
 // changed since (the tag tells no more); a file that is no keys.enc, or
 // is of another version, is an Error saying so
 export function config_open(text: string, pass: string): Record<string, string> | null {
+  const bad = (why: string) => new Error("config: " + SEALED + " is damaged (" + why + "): restore it, or delete it and seal the keys anew");
+  const { cost, salt, iv, tag, data } = config_box(text);
+  let plain: string;
+  try {
+    const decipher = crypto.createDecipheriv("aes-256-gcm", config_kdf(pass, salt, cost), iv, { authTagLength: 16 });
+    decipher.setAuthTag(tag);
+    plain = Buffer.concat([decipher.update(data), decipher.final()]).toString("utf8");
+  } catch {
+    return null;
+  }
+  let keys: any;
+  try {
+    keys = JSON.parse(plain);
+  } catch {
+    throw bad("sealed no keys");
+  }
+  if (typeof keys !== "object" || keys === null || Array.isArray(keys) || Object.values(keys).some((key) => typeof key !== "string")) {
+    throw bad("sealed no keys");
+  }
+  return keys;
+}
+
+// a keys.enc's text, read: its scrypt cost (KDF_FIRST's if of the first
+// kind, which keeps no kdf, N, r nor p), salt, iv, tag and sealed data;
+// an Error if it is no keys.enc, or of another version
+function config_box(text: string): { cost: Cost; first: boolean; salt: Buffer; iv: Buffer; tag: Buffer; data: Buffer } {
   const bad = (why: string) => new Error("config: " + SEALED + " is damaged (" + why + "): restore it, or delete it and seal the keys anew");
   let box: any;
   try {
@@ -324,33 +431,13 @@ export function config_open(text: string, pass: string): Record<string, string> 
     }
     return buf;
   };
-  const { N, r, p } = box;
+  const first = ["kdf", "N", "r", "p"].every((name) => !(name in box));
+  const { N, r, p } = first ? KDF_FIRST : box;
   const whole = (n: unknown, lo: number, hi: number) => Number.isInteger(n) && (n as number) >= lo && (n as number) <= hi;
-  if (box.kdf !== "scrypt" || !whole(N, 2, 2 ** 24) || (N & (N - 1)) !== 0 || !whole(r, 1, 64) || !whole(p, 1, 16) || 128 * N * r > KDF_MAX) {
+  if ((!first && box.kdf !== "scrypt") || !whole(N, 2, 2 ** 24) || (N & (N - 1)) !== 0 || !whole(r, 1, 64) || !whole(p, 1, 16) || config_mem({ N, r, p }) > KDF_MAX) {
     throw bad("no scrypt cost it can use");
   }
-  const salt = bytes("salt", 16);
-  const iv = bytes("iv", 12);
-  const tag = bytes("tag", 16);
-  const data = bytes("data", null);
-  let plain: string;
-  try {
-    const decipher = crypto.createDecipheriv("aes-256-gcm", config_kdf(pass, salt, { N, r, p }), iv, { authTagLength: 16 });
-    decipher.setAuthTag(tag);
-    plain = Buffer.concat([decipher.update(data), decipher.final()]).toString("utf8");
-  } catch {
-    return null;
-  }
-  let keys: any;
-  try {
-    keys = JSON.parse(plain);
-  } catch {
-    throw bad("sealed no keys");
-  }
-  if (typeof keys !== "object" || keys === null || Array.isArray(keys) || Object.values(keys).some((key) => typeof key !== "string")) {
-    throw bad("sealed no keys");
-  }
-  return keys;
+  return { cost: { N, r, p }, first, salt: bytes("salt", 16), iv: bytes("iv", 12), tag: bytes("tag", 16), data: bytes("data", null) };
 }
 
 // config_open's keys, or an Error if not by that passphrase
