@@ -6,7 +6,9 @@
 // holds those never taken. Every vendor is an API run in our loop
 // (Agent.ts). A patient call (a summary's) asks again, AGAIN after each
 // try nothing answered (the vendor down or refusing it, as when the API
-// key's credit is gone; our setup failing), till
+// key's credit is gone; our setup failing) or, if the vendor said when
+// its refusal lifts (`until`: a ChatGPT plan's usage limit), then (a week
+// at most), till
 // one is answered or we end it (a stop; its payer's refusal: its node
 // then waits for the user's credit, with no call: Memory.ts `hold`): an
 // outage only delays it, and no summary is made of a failure that isn't
@@ -38,7 +40,7 @@ import type { Usage } from "./Price.ts";
 // result, a note from before the chat (imported)
 export type Kind = "user" | "work" | "mind" | "unii" | "tool" | "echo" | "note";
 
-export type Vendor = "claude-api" | "openai-api";
+export type Vendor = "claude-api" | "openai-api" | "openai-sub";
 
 // an image: its mime type, its bytes in base64
 export type Img = { type: string; data: string };
@@ -108,13 +110,15 @@ export type Event =
 // stop: who ended a call that failed (Agent.ts): the model (`fail`: it
 // answered, so the failure is its input's doing, a refusal or a stop
 // reason; asked again, it fails alike), we (`lost`: a stop, its payer's
-// refusal or cut), the vendor (`down`), or none (our setup threw)
+// refusal or cut), the vendor (`down`), or none (our setup threw);
+// until: when the vendor's refusal lifts, if it said (ms since 1970)
 export type End = {
-  ok    : boolean;
-  text  : string;
-  left  : Say[];
-  note? : string;
-  stop? : "fail" | "lost" | "down";
+  ok     : boolean;
+  text   : string;
+  left   : Say[];
+  note?  : string;
+  stop?  : "fail" | "lost" | "down";
+  until? : number;
 };
 
 // one try at a vendor
@@ -139,10 +143,16 @@ export type Call = Try & { move: (to: Sink) => void };
 // vendor meanwhile (its JOBS a side per chat each asking once a minute)
 const AGAIN = 60e3;
 
-// how long a vendor keeps a cache entry unused, in ms
+// the longest a patient call waits for a refusal to lift (a ChatGPT
+// plan's limits last a week at most)
+const WEEK = 7 * 86400e3;
+
+// how long a vendor keeps a cache entry unused, in ms (openai-sub's
+// backend tells none: the shorter guess)
 export const TTL: Record<Vendor, number> = {
   "claude-api" : 300e3,
   "openai-api" : 1800e3,
+  "openai-sub" : 300e3,
 };
 
 // the prefixes cached, by key (AskAI.keys)
@@ -169,7 +179,7 @@ export namespace AskAI {
       for (;;) {
         const wait = ask.patient === true && !end.ok && end.stop !== "fail" && end.stop !== "lost";
         if (wait) {
-          await Machine.nap(AGAIN, halt.signal);
+          await Machine.nap(Math.min(WEEK, Math.max(AGAIN, (end.until ?? 0) - Date.now())), halt.signal);
         }
         if (halt.signal.aborted || !wait) {
           return end;

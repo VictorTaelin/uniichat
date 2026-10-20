@@ -96,13 +96,19 @@ create index if not exists acts_big on acts (at) where ans <> '{}';
 
 export namespace Cloud {
 
-  // the server's processes share it (Server.ts, Disk.db)
+  // the server's processes share it (Server.ts, Disk.db). A server that
+  // bills offers no openai-sub: its calls run on one ChatGPT plan, the
+  // server's own, never its users', and would be billed at API prices
   export function open(change: Cloud["change"], signed: Cloud["signed"], post: Cloud["post"]): Cloud {
     const file = path.join(config.DIR, "cloud.db");
     const db = Disk.db(file);
     db.exec(SCHEMA);
     const base = { db, wal: file + "-wal", change, signed, post, waits: new Map() };
-    return { ...base, billing: Billing.open(base) };
+    const billing = Billing.open(base);
+    if (billing.bills && config.OFFER.vendors.includes("openai-sub")) {
+      throw new Error("config: a server that bills can't offer openai-sub (a ChatGPT plan is one person's, not its users')");
+    }
+    return { ...base, billing };
   }
 
   // a terminal's session made: its wait answered, if here

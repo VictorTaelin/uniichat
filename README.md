@@ -78,7 +78,7 @@ also be set as the variable `UNII_<KEY>`:
   http://127.0.0.1:8788). Another port: `UNII_SITE=http://127.0.0.1:9000
   bun Server.ts 9000`.
 - `vendors`: what the server offers, comma-separated: `claude-api`
-  (default), `openai-api`.
+  (default), `openai-api`, `openai-sub` (a ChatGPT plan, below).
 - `models`: the models offered, by label (Pick.ts; default all).
 - `pick`: what a chat runs on until it picks another,
   `vendor:model:effort:speed` (default `claude-api:sonnet-5.5:medium:slow`).
@@ -93,6 +93,8 @@ also be set as the variable `UNII_<KEY>`:
   process). With a number, `Server.ts` only routes, behind a proxy that
   honors its `x-unii-worker` header (Server.ts explains).
 - `apple`, `apns`: the iOS app's App ID and push key id (ios/).
+- `chatgpt`: where the ChatGPT sign-in is kept (default
+  ~/.unii/chatgpt.json).
 
 Keys are read from the environment: `ANTHROPIC_API_KEY`,
 `OPENAI_API_KEY`, `RESEND_API_KEY` (to email sign-in links; none: they
@@ -102,6 +104,12 @@ With only an OpenAI key, set `vendors`, `pick` and `compactor` to
 `openai-api` models, e.g. `UNII_VENDORS=openai-api
 UNII_PICK=openai-api:gpt-6.1-sol:medium:slow
 UNII_COMPACTOR=openai-api:gpt-6-luna:high:slow`.
+
+With a ChatGPT plan instead, run `unii chatgpt` (or `bun ChatGPT.ts`;
+`device` to sign in from another computer, `logout` to sign out) and use
+`openai-sub` the same way. The sign-in is the server's: every user's
+calls run on that one plan, so offer it only on a server for yourself.
+A server that bills refuses to start with it.
 
 A self-hosted server is free: it bills no one, shows no prices, and calls
 only the model vendors. Billing.ts is the one place a hosted server

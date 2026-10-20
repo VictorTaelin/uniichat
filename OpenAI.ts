@@ -17,7 +17,7 @@ import * as config from "./Config.ts";
 // =====
 
 // a stream read so far: the final response, or an error event; usage
-type State = { res: any; error: any; use: Usage };
+export type State = { res: any; error: any; use: Usage };
 
 // Constants
 // =========

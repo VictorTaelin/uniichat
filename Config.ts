@@ -36,6 +36,9 @@ export const COMPACTOR  = config_run("compactor", config_get("compactor", "claud
 export const AGENTS     = config_get("agents", "") ? config_run("agents", config_get("agents", "")) : null;
 export const WORKERS    = Number(config_get("workers", "0"));
 
+// openai-sub's ChatGPT sign-in (ChatGPT.ts)
+export const CHATGPT    = config_path(config_get("chatgpt", DIR + "/chatgpt.json"));
+
 // the iOS app (ios/, Cloud.ts): its App ID, the team's then the bundle's
 // ("TEAM.com.example.uniichat"), whose app sign-in links open; and
 // the id of the key its pushes are signed with (APNS_KEY holds the key)
