@@ -2087,10 +2087,10 @@ export namespace Main {
   }
 
   // the workers' supervisor (run: what starts one, on port+1+k,
-  // UNII_WORKER=k): holds the lock, starts again a worker that dies,
-  // answers each request with its worker's address (`x-unii-worker`:
-  // README; past its network's limit, NETS, 429), relays a worker's word
-  // to all, sends their mail. A deploy (SIGHUP) starts each worker anew,
+  // UNII_WORKER=k, the keys on its stdin): holds the lock, starts again
+  // a worker that dies, answers each request with its worker's address
+  // (`x-unii-worker`: README; past its network's limit, NETS, 429),
+  // relays a worker's word to all, sends their mail. A deploy (SIGHUP) starts each worker anew,
   // which takes the chats of the one before (Main.start); one that fails
   // to start leaves that one serving. Its own code changes only on a
   // restart
@@ -2115,9 +2115,10 @@ export namespace Main {
       }
     };
     const start = (k: number) => {
-      const env = { ...config.config_env(), UNII_WORKER: String(k), BUN_CONFIG_MAX_HTTP_REQUESTS: String(FETCHES) };
+      const env = { ...process.env, UNII_WORKER: String(k), BUN_CONFIG_MAX_HTTP_REQUESTS: String(FETCHES) };
       const ipc = (msg: any, proc: Bun.Subprocess) => hear(k, proc, msg);
-      const proc = Bun.spawn([...run, String(port + 1 + k)], { env, ipc, stdio: ["ignore", "inherit", "inherit"] });
+      const stdin = new Blob([config.config_hand()]);
+      const proc = Bun.spawn([...run, String(port + 1 + k)], { env, ipc, stdin, stdout: "inherit", stderr: "inherit" });
       all.add(proc);
       proc.exited.then((code) => {
         all.delete(proc);

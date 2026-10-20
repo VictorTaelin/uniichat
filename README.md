@@ -98,6 +98,21 @@ Keys are read from the environment: `ANTHROPIC_API_KEY`,
 `OPENAI_API_KEY`, `RESEND_API_KEY` (to email sign-in links; none: they
 print), `APNS_KEY`.
 
+Or sealed, so none sits in a file in plain text: start once with the
+keys and a passphrase set,
+
+    ANTHROPIC_API_KEY=sk-ant-... UNII_PASSPHRASE=... bun Server.ts
+
+and the server seals them in `~/.unii/keys.enc` (AES-256-GCM, by a key
+scrypt makes of the passphrase; 600). Then drop them from wherever they
+were set. Each later start needs only the passphrase: `UNII_PASSPHRASE`,
+else typed at the terminal it starts at. A key set in the environment
+beside it wins and is sealed in, so that is how one is added or changed
+(to drop one, delete keys.enc and seal anew). Typed, the passphrase is
+kept on no disk, so a program run as you (an agent's shell) finds the
+keys only sealed; set in a file, it guards copies of ~/.unii, not that
+file.
+
 With only an OpenAI key, set `vendors`, `pick` and `compactor` to
 `openai-api` models, e.g. `UNII_VENDORS=openai-api
 UNII_PICK=openai-api:gpt-6.1-sol:medium:slow
