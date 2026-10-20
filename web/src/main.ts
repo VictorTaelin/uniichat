@@ -211,8 +211,10 @@ function chat(): void {
     if (!P.guest) {
       sessionStorage.setItem(kept("draft"), BOX.value);
     }
-    BOX.style.height = "auto";
-    BOX.style.height = Math.min(BOX.scrollHeight, innerHeight * 0.4) + "px";
+    if (BOX.offsetParent !== null) {
+      BOX.style.height = "auto";
+      BOX.style.height = Math.min(BOX.scrollHeight, innerHeight * 0.4) + "px";
+    }
     draw(true);
   };
   // a guest's answer, an email, is one line: Enter sends it everywhere;
@@ -245,8 +247,14 @@ function chat(): void {
     attach([...(ev.dataTransfer?.files ?? [])]);
   };
   document.onclick = click;
-  // a phone's keyboard up or down: the bottom stays in sight, if at it
-  visualViewport!.onresize = () => draw(true);
+  // a phone's keyboard up or down: the box's last line stays in sight, if
+  // the caret is there; the page's bottom, if at it
+  visualViewport!.onresize = () => {
+    if (document.activeElement === BOX && BOX.selectionStart === BOX.value.length) {
+      BOX.scrollTop = BOX.scrollHeight;
+    }
+    draw(true);
+  };
   document.onscroll = () => {
     P.end = innerHeight + scrollY >= document.documentElement.scrollHeight - 1;
   };
