@@ -40,10 +40,11 @@ config.KEYS.anthropic = "test";
 
 const { AskAI } = await import("./AskAI.ts");
 const { Memory } = await import("./Memory.ts");
-const { MASTER } = await import("./Tools.ts");
+const { COMPACT, MASTER } = await import("./Tools.ts");
 
 const PICK = { vendor: "claude-api" as const, model: "claude-opus-5-5", effort: "medium", speed: "slow" };
 const SHARE = { ...PICK, system: MASTER, searches: 0, server: "" };
+const COMPACT_SHARE = { ...SHARE, system: COMPACT };
 
 // Clock
 // =====
@@ -167,7 +168,7 @@ function task_node(task: string): [number, number] {
 // most its first's messages and the note
 async function replay(logs: Log[]): Promise<Record<string, Use>> {
   const dir = DIR + "/chat" + Math.floor(rand() * 1e9);
-  const mem = Memory.load(dir, () => SHARE);
+  const mem = Memory.load(dir, () => COMPACT_SHARE);
   const uses: Record<string, Use> = {};
   const sizes = new Map<string, number>();
   const real = globalThis.fetch;

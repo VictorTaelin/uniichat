@@ -31,6 +31,7 @@ import * as config from "./Config.ts";
 import { COMPUTER, INT, STR, TOOLS, spec, type Job, type Spec } from "./Machine.ts";
 import { Memory } from "./Memory.ts";
 import PROMPT from "./prompt.txt" with { type: "text" };
+import COMPACT_PROMPT from "./compact.txt" with { type: "text" };
 import { EFFORTS, Pick } from "./Pick.ts";
 import type { Live } from "./View.ts";
 
@@ -117,8 +118,14 @@ let HTTP: ReturnType<typeof Bun.serve> | null = null;
 // the header of a request that waits on a job, its id (Tools.give)
 const JOB = "x-unii-job";
 
-// the master's prompt (a turn's and a compaction's): prompt.txt
+// the master's prompt (a turn's): prompt.txt
 export const MASTER = PROMPT.trim();
+
+// a compaction's prompt: compact.txt. Apart from the turns': with one
+// prompt for both and only the call's last line telling them apart, a
+// turn could come back a compaction (the view's "unii:" lines all
+// summaries, Sonnet wrote one of the new message instead of a reply)
+export const COMPACT = COMPACT_PROMPT.trim();
 
 const SUB_HEAD = `You are a subagent of Unii, an AI agent that works for one user in a
 single chat that never ends. Unii gave you a task. Do it yourself, with
