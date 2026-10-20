@@ -94,6 +94,10 @@ also be set as the variable `UNII_<KEY>`:
   honors its `x-unii-worker` header (Server.ts explains).
 - `apple`, `apns`: the iOS app's App ID and push key id (ios/).
 
+`vapid.json` in the server's dir is its Web Push key pair, made at first
+start; keep it, as a new one silences every browser until notifications
+are turned on again. Installing and notifications need https (or 127.0.0.1).
+
 Keys are read from the environment: `ANTHROPIC_API_KEY`,
 `OPENAI_API_KEY`, `RESEND_API_KEY` (to email sign-in links; none: they
 print), `APNS_KEY`.

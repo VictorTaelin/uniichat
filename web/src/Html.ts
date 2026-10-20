@@ -11,6 +11,13 @@ import * as Md from "../../Md.ts";
 import * as Theme from "../../Theme.ts";
 import * as View from "../../View.ts";
 
+// Types
+// =====
+
+// this browser's notifications (main.ts notify_state): off, on, blocked
+// in its settings, or only once on the Home Screen (an iPhone's Safari)
+export type Notify = "off" | "on" | "blocked" | "home";
+
 // Constants
 // =========
 
@@ -137,8 +144,9 @@ export function fine_html(app: boolean): string {
 
 // the account page (/account): where the server bills, the balance and
 // credit to add, the use by day and the purchases; then the account's
-// own acts; deleting asks first, in place (main.ts)
-export function account_html(a: View.Account, app: boolean): string {
+// own acts (notify: this browser's notifications, null: none to offer);
+// deleting asks first, in place (main.ts)
+export function account_html(a: View.Account, app: boolean, notify: Notify | null = null): string {
   const tops    = a.topups ?? [];
   const days    = View.account_days(a);
   const balance = a.credits === null ? "" : section_html("Balance", `<p class="big">${View.usd_show(a.credits)}</p>` + credit_html(app));
@@ -150,12 +158,25 @@ export function account_html(a: View.Account, app: boolean): string {
   const kill    = `<form class="kill" hidden>${closes}<p>Type <b>${esc(a.name)}</b> to confirm.</p><input name="name" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="${esc(a.name)}"><p class="why"></p><div><button type="button" class="chip keep">Cancel</button><button class="chip red" disabled>Delete for good</button></div></form>`;
   const acts    = [
     item(esc(a.name), "", `<button class="chip out">Sign out</button>`),
+    ...(notify === null ? [] : [notify_html(notify)]),
     item("Export memory", "Chat and account, in one file.", `<a class="chip" href="/export">Download</a>`),
     item("Delete account", "Erases chat and memory for good.", `<button class="chip red del">Delete</button>`),
   ];
   const account = section_html("Sign-in and data", acts.join("") + kill);
   const links   = a.bills ? `<p class="foot"><a href="/pricing" target="_blank">Prices</a> · <a href="/terms.html" target="_blank">Terms</a> · <a href="/privacy.html" target="_blank">Privacy</a> · <a href="mailto:contact@higherorderco.com">Help</a></p>` : "";
   return `<a class="back" href="/" data-go="/">← Chat</a><h1>Account</h1>` + money + account + links;
+}
+
+// the account page's notifications item: its note, and its button
+function notify_html(notify: Notify): string {
+  const note = {
+    off     : "Replies on this device, when UniiChat isn't open.",
+    on      : "Replies on this device, when UniiChat isn't open.",
+    blocked : "Blocked in this browser's settings for this site.",
+    home    : "On iPhone and iPad: Share, then Add to Home Screen, and open it from there.",
+  }[notify];
+  const button = notify === "home" ? "" : `<button class="chip notify"${notify === "blocked" ? " disabled" : ""}>${notify === "on" ? "Turn off" : "Turn on"}</button>`;
+  return `<div class="item"><p>Notifications<small>${note}</small></p>${button}</div>`;
 }
 
 // a section of the account page: its title, then its markup

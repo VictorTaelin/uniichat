@@ -11,7 +11,9 @@
 // (/account), and the footer as the terminal's. A tab is no device; a
 // signed-out one gets the chat offline (Guest). In the iOS app (ios/),
 // credit is bought through the App Store (APP), and sign-in is by email
-// only (another company's would need Sign in with Apple).
+// only (another company's would need Sign in with Apple). Elsewhere the
+// site installs as an app (manifest.webmanifest, sw.js) and may notify
+// (Notifications).
 
 import * as Import from "../../Import.ts";
 import { theme_css } from "../../Theme.ts";
@@ -87,6 +89,7 @@ const P = {
   done  : {} as Import.Done,
   off   : new Set<string>(),
   step  : "" as "" | "start" | "pay" | "send" | "run" | "seen" | "done",
+  push  : null as { reg: ServiceWorkerRegistration; key: string } | null,
 };
 
 function $<T extends HTMLElement>(sel: string): T {
@@ -106,6 +109,9 @@ function kept(fact: string): string {
 
 async function boot(): Promise<void> {
   document.head.insertAdjacentHTML("beforeend", `<style>${theme_css()}</style>`);
+  if (APP === null) {
+    navigator.serviceWorker?.register("/sw.js").catch(() => {});
+  }
   const q = new URLSearchParams(location.search);
   history.replaceState(null, "", location.pathname === "/account" ? "/account" : "/");
   if (q.has("terminal")) {
@@ -143,12 +149,19 @@ async function boot(): Promise<void> {
 
 // the account signed in (null: none, as the server refuses the session);
 // any other answer (a network past its limit, a deploy, no connection)
-// says nothing of who, so it is asked again
+// says nothing of who, so it is asked again, saying so while it lasts (the
+// app opened from sw.js's shell with the server down)
 async function boot_me(): Promise<any> {
-  for (;;) {
+  for (let k = 0; ; k++) {
     const res = await fetch("/api/me").catch(() => null);
     if (res?.status === 200 || res?.status === 401) {
+      if (k > 0) {
+        $("#toast").hidden = true;
+      }
       return res.ok ? res.json() : null;
+    }
+    if (k === 0) {
+      toast("Can't reach UniiChat. Reconnecting…", true);
     }
     await new Promise((ok) => setTimeout(ok, View.RETRY));
   }
@@ -969,7 +982,8 @@ async function account(): Promise<void> {
     el.innerHTML = `<p class="sub">Could not read your account. Try again in a moment.</p>`;
     return;
   }
-  el.innerHTML = Html.account_html(a, APP !== null);
+  const push = await notify_state().catch(() => null);
+  el.innerHTML = Html.account_html(a, APP !== null, push);
   const kill = $<HTMLFormElement>("#account .kill");
   const del  = $<HTMLButtonElement>("#account .del");
   const name = kill.querySelector("input")!;
@@ -984,6 +998,11 @@ async function account(): Promise<void> {
   $("#account .keep").onclick = () => sure(false);
   name.oninput = () => (kill.querySelector<HTMLButtonElement>(".red")!.disabled = name.value.trim().toLowerCase() !== a.name.toLowerCase());
   $("#account .out").onclick = signout;
+  const bell = document.querySelector<HTMLButtonElement>("#account .notify");
+  bell?.addEventListener("click", () => {
+    bell.disabled = true;
+    notify(push !== "on");
+  });
   kill.onsubmit = (ev) => {
     ev.preventDefault();
     account_delete(kill);
@@ -991,6 +1010,7 @@ async function account(): Promise<void> {
 }
 
 async function signout(): Promise<void> {
+  await notify_sub().then((sub) => sub?.unsubscribe()).catch(() => {});
   await View.post("/api/logout", {});
   location.href = "/";
 }
@@ -1004,6 +1024,98 @@ async function account_delete(kill: HTMLFormElement): Promise<void> {
     return;
   }
   kill.querySelector(".why")!.textContent = out.error;
+}
+
+// Notifications
+// =============
+// Web Push (Push.ts): turned on on the account page, by a click, as only
+// a click may ask the browser's permission (subscribing asks it), so
+// what subscribing needs (P.push) is read as the page is drawn. On while
+// this browser's subscription is kept for this sign-in
+// (Cloud.web_subscribe); signing out ends it.
+
+// null: none to offer (the app notifies by itself; a browser without
+// push, or whose push service fails, as Firefox's with push turned off)
+async function notify_state(): Promise<Html.Notify | null> {
+  P.push = null;
+  if (APP !== null) {
+    return null;
+  }
+  if (navigator.serviceWorker === undefined || !("PushManager" in window) || !("Notification" in window)) {
+    return /iPhone|iPad/.test(navigator.userAgent) ? "home" : null;
+  }
+  if (Notification.permission === "denied") {
+    return "blocked";
+  }
+  const wait = new Promise<undefined>((ok) => setTimeout(ok, 3000, undefined));
+  const reg = (await navigator.serviceWorker.getRegistration()) ?? (await Promise.race([navigator.serviceWorker.ready, wait]));
+  const sub = await notify_sub();
+  const query = sub === null ? "" : "?endpoint=" + encodeURIComponent(sub.endpoint);
+  const res = await fetch("/api/webpush" + query).catch(() => null);
+  const out = res?.ok ? await res.json() : null;
+  if (reg === undefined || out === null || out.key === null) {
+    return null;
+  }
+  P.push = { reg, key: out.key };
+  return out.on && notify_keyed(sub, out.key) ? "on" : "off";
+}
+
+// whether a subscription was made for the server's key (one made for a
+// key it had before gets no push)
+function notify_keyed(sub: PushSubscription | null, key: string): boolean {
+  const had = sub?.options.applicationServerKey;
+  return had != null && notify_bytes(key).join() === new Uint8Array(had).join();
+}
+
+function notify_bytes(key: string): Uint8Array<ArrayBuffer> {
+  return Uint8Array.from(atob(key.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0));
+}
+
+async function notify_sub(): Promise<PushSubscription | null> {
+  const reg = await navigator.serviceWorker?.getRegistration();
+  return (await reg?.pushManager.getSubscription()) ?? null;
+}
+
+async function notify(on: boolean): Promise<void> {
+  const push = P.push;
+  if (push === null) {
+    return;
+  }
+  const what = on ? "on" : "off";
+  try {
+    const out = on ? await notify_on(push.reg, push.key) : await notify_off(push.reg);
+    toast(out.error ?? "Notifications are " + what + ".");
+  } catch (err: any) {
+    const denied = typeof Notification !== "undefined" && Notification.permission === "denied";
+    toast(denied ? "Notifications are blocked in this browser's settings." : "Could not turn notifications " + what + ": " + (err?.message ?? err));
+  }
+  account();
+}
+
+// the browser asked first, at once (the click's); a subscription to
+// another key (the server's keys made anew) is replaced
+async function notify_on(reg: ServiceWorkerRegistration, key: string): Promise<any> {
+  const bytes = notify_bytes(key);
+  const ask = () => reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: bytes });
+  const sub = await ask().catch(async (err) => {
+    const old = await reg.pushManager.getSubscription();
+    if (old === null || err?.name !== "InvalidStateError") {
+      throw err;
+    }
+    await old.unsubscribe();
+    return ask();
+  });
+  return View.post("/api/webpush", sub.toJSON());
+}
+
+async function notify_off(reg: ServiceWorkerRegistration): Promise<any> {
+  const sub = await reg.pushManager.getSubscription();
+  if (sub !== null) {
+    const headers = { "content-type": "application/json" };
+    await fetch("/api/webpush", { method: "DELETE", headers, body: JSON.stringify({ endpoint: sub.endpoint }) });
+    await sub.unsubscribe();
+  }
+  return {};
 }
 
 // Notes
@@ -1031,12 +1143,13 @@ async function topup(usd: number): Promise<boolean> {
   return false;
 }
 
-function toast(text: string): void {
+// shown 7 s, or till hidden (stay)
+function toast(text: string, stay = false): void {
   const el = $("#toast");
   el.textContent = text;
   el.hidden = false;
   clearTimeout(P.toast);
-  P.toast = setTimeout(() => (el.hidden = true), 7000) as unknown as number;
+  P.toast = stay ? 0 : (setTimeout(() => (el.hidden = true), 7000) as unknown as number);
 }
 
 // Intro

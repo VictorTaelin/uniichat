@@ -56,6 +56,12 @@ import mark_svg from "./web/mark.svg" with { type: "file" };
 import experimental_jpg from "./web/experimental.jpg" with { type: "file" };
 import og_png from "./web/og.png" with { type: "file" };
 import style_css from "./web/style.css" with { type: "file" };
+import manifest from "./web/manifest.webmanifest" with { type: "file" };
+import sw_js from "./web/sw.js" with { type: "file" };
+import icon_192 from "./web/icon-192.png" with { type: "file" };
+import icon_512 from "./web/icon-512.png" with { type: "file" };
+import icon_mask from "./web/icon-maskable-512.png" with { type: "file" };
+import icon_apple from "./web/apple-touch-icon.png" with { type: "file" };
 
 // Types
 // =====
@@ -237,13 +243,19 @@ const WEB: Record<string, string> = {
   "/"               : index_html,
   "/account"        : index_html,
   "/app.js"         : app_js,
+  "/apple-touch-icon.png": icon_apple,
   "/experimental.jpg": experimental_jpg,
   "/favicon.svg"    : mark_svg,
+  "/icon-192.png"   : icon_192,
+  "/icon-512.png"   : icon_512,
+  "/icon-maskable-512.png": icon_mask,
   "/install.sh"     : install_sh,
   "/legal.css"      : legal_css,
+  "/manifest.webmanifest": manifest,
   "/mark.svg"       : mark_svg,
   "/og.png"         : og_png,
   "/style.css"      : style_css,
+  "/sw.js"          : sw_js,
 };
 
 // a new account's chat opens as its guest's talk went (main.ts guest), so
@@ -726,11 +738,12 @@ export namespace Chat {
   }
 
   // a turn's last message, Unii's reply or why there was none, to the
-  // user's phones (Cloud.push)
+  // user's phones (Cloud.push) and browsers (Cloud.web_push)
   export function phone(chat: Chat): void {
     const last = Memory.message(chat.mem, chat.mem.count - 1);
     if (last !== null && (last.kind === "unii" || last.kind === "note")) {
       Cloud.push(Chat.cloud, chat.acct.user, last.text);
+      Cloud.web_push(Chat.cloud, chat.acct.user, last.text);
     }
   }
 

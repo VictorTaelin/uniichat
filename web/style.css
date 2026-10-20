@@ -392,7 +392,7 @@ header > .imping { display: flex; flex-direction: column; justify-content: cente
 .kill p { margin: 0 0 8px; font-size: 14.5px; }
 .kill .why { color: var(--red); }
 .kill .why:empty { display: none; }
-.kill .chip:disabled { opacity: .4; cursor: default; }
+.kill .chip:disabled, #account .notify:disabled { opacity: .4; cursor: default; }
 #account .foot { margin: 24px 0 0; font-size: 13px; color: var(--mid); }
 #account .foot a { text-decoration: none; }
 #account .foot a:hover { text-decoration: underline; }

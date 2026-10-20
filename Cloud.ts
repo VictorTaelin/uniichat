@@ -9,7 +9,8 @@
 // it made and waits (/api/wait) while its link's page asks for the code it
 // shows (in no link). An emailed link works until it expires (mail apps open it
 // first); other tickets once. Tokens are kept as hashes. The iOS app's links
-// open it (AASA), its phones get each turn's last message (APNs).
+// open it (AASA), its phones get each turn's last message (APNs), as do
+// browsers that turned notifications on (Web Push, Push.ts).
 
 import type { Database } from "bun:sqlite";
 import * as crypto from "node:crypto";
@@ -18,6 +19,7 @@ import * as path from "node:path";
 import { Billing } from "./Billing.ts";
 import * as config from "./Config.ts";
 import { Disk } from "./Disk.ts";
+import { Push, type Sub } from "./Push.ts";
 
 // Types
 // =====
@@ -72,6 +74,13 @@ const SPAN      = 24 * 60 * 60 * 1000;
 const PUSH = { link: null as http2.ClientHttp2Session | null, jwt: "", at: 0 };
 const PUSH_AGE = 40 * 60 * 1000;
 
+// the browsers a user may have get pushes at once (the oldest beyond go),
+// so no account makes each turn post to a thousand endpoints
+const WEB_PUSHES = 32;
+
+// how much of a message a push shows
+const GIST = 200;
+
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const LOGIN = /^@[a-z0-9-]{1,39}$/;
 
@@ -87,6 +96,9 @@ create table if not exists users    (id integer primary key autoincrement, email
 create table if not exists pushes   (token text primary key, session text not null, user text not null);
 create index if not exists pushes_user on pushes (user);
 create trigger if not exists pushes_go after delete on sessions begin delete from pushes where session = old.hash; end;
+create table if not exists web_pushes (endpoint text primary key, p256dh text not null, auth text not null, session text not null, user text not null);
+create index if not exists web_pushes_user on web_pushes (user);
+create trigger if not exists web_pushes_go after delete on sessions begin delete from web_pushes where session = old.hash; end;
 create table if not exists acts     (user text not null, id text not null, ans text not null, at integer not null, primary key (user, id));
 create index if not exists acts_big on acts (at) where ans <> '{}';
 `;
@@ -101,6 +113,7 @@ export namespace Cloud {
     const file = path.join(config.DIR, "cloud.db");
     const db = Disk.db(file);
     db.exec(SCHEMA);
+    Push.keys();
     const base = { db, wal: file + "-wal", change, signed, post, waits: new Map() };
     return { ...base, billing: Billing.open(base) };
   }
@@ -257,7 +270,7 @@ export namespace Cloud {
     }
     const sql = "select token from pushes where user = ?";
     const phones = cloud.db.query(sql).all(user) as { token: string }[];
-    const body = JSON.stringify({ aps: { alert: { body: text.replace(/\s+/g, " ").slice(0, 200) }, sound: "default" } });
+    const body = JSON.stringify({ aps: { alert: { body: Cloud.gist(text) }, sound: "default" } });
     for (const { token } of phones) {
       const link = Cloud.apns();
       const head = { ":method": "POST", ":path": "/3/device/" + token, authorization: "bearer " + PUSH.jwt, "apns-topic": config.APPLE.replace(/^[^.]*\./, ""), "apns-push-type": "alert" };
@@ -274,6 +287,29 @@ export namespace Cloud {
         }
       });
       req.end(body);
+    }
+  }
+
+  // what a push shows of a message: its start, on one line
+  export function gist(text: string): string {
+    return text.replace(/\s+/g, " ").slice(0, GIST);
+  }
+
+  // the start of a message, to every browser of the user's that turned
+  // notifications on (sw.js shows it); one its push service no longer
+  // knows (404, 410) is forgotten
+  export function web_push(cloud: Cloud, user: string, text: string): void {
+    const sql = "select endpoint, p256dh, auth from web_pushes where user = ?";
+    const subs = cloud.db.query(sql).all(user) as Sub[];
+    const body = JSON.stringify({ text: Cloud.gist(text) });
+    for (const sub of subs) {
+      Push.send(sub, body).then((status) => {
+        if (status === 404 || status === 410) {
+          cloud.db.query("delete from web_pushes where endpoint = ?").run(sub.endpoint);
+        } else if (status !== 0 && (status < 200 || status > 299)) {
+          console.error("web push: " + new URL(sub.endpoint).host + ": HTTP " + status);
+        }
+      });
     }
   }
 
@@ -364,6 +400,8 @@ export namespace Cloud {
         if (account === null) {
           return Cloud.expired();
         }
+        // the browser's sign-in before ends, and its pushes with it
+        db.query("delete from sessions where hash = ?").run(Cloud.hash(Cloud.token(req)));
         const cookie = COOKIE + "=" + Cloud.session(cloud, account) + KEEP;
         return new Response(null, { status: 302, headers: { location: config.SITE + "/", "set-cookie": cookie } });
       }
@@ -417,8 +455,42 @@ export namespace Cloud {
         db.query("insert or replace into pushes values (?, ?, ?)").run(token, Cloud.hash(Cloud.token(req)), user.id);
         return Response.json({ ok: true });
       }
+      case "/api/webpush": {
+        return Cloud.web_subscribe(cloud, user, req);
+      }
     }
     return null;
+  }
+
+  // a browser's notifications (main.ts notify): GET, the server's key and
+  // whether this sign-in has that endpoint (?endpoint=); POST, its
+  // subscription, kept for this sign-in (posted from another, it moves
+  // there); DELETE, its endpoint, forgotten
+  export async function web_subscribe(cloud: Cloud, user: User, req: Request): Promise<Response> {
+    const db = cloud.db;
+    const session = Cloud.hash(Cloud.token(req));
+    if (req.method === "GET") {
+      const endpoint = new URL(req.url).searchParams.get("endpoint") ?? "";
+      const row = db.query("select 1 from web_pushes where endpoint = ? and session = ?").get(endpoint, session);
+      return Response.json({ key: Push.keys()?.public ?? null, on: row !== null });
+    }
+    const body = await req.json().catch(() => null);
+    if (req.method === "DELETE") {
+      db.query("delete from web_pushes where endpoint = ? and user = ?").run(String(body?.endpoint ?? ""), user.id);
+      return Response.json({ ok: true });
+    }
+    const sub = Push.sub_read(body);
+    if (req.method !== "POST" || sub === null || (await Push.inside(sub.endpoint))) {
+      return Response.json({ error: "Not a push subscription" }, { status: 400 });
+    }
+    // kept only if this sign-in still is the user's (it may have ended
+    // while the body was read)
+    const sql = "insert or replace into web_pushes select ?, ?, ?, hash, id from sessions where hash = ? and id = ?";
+    if (db.query(sql).run(sub.endpoint, sub.p256dh, sub.auth, session, user.id).changes === 0) {
+      return Response.json({ error: "Signed out" }, { status: 401 });
+    }
+    db.query("delete from web_pushes where user = ? and rowid not in (select rowid from web_pushes where user = ? order by rowid desc limit ?)").run(user.id, user.id, WEB_PUSHES);
+    return Response.json({ ok: true });
   }
 
   // the answer that signs a browser out
