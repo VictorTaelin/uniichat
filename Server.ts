@@ -34,6 +34,7 @@ import * as net from "node:net";
 import type { ServerWebSocket } from "bun";
 import { READING } from "./Agent.ts";
 import { AskAI, type Bill, type Grant, type Call, type End, type Event, type Kind, type Say, type Sink } from "./AskAI.ts";
+import { Backup } from "./Backup.ts";
 import type { Wallet } from "./Billing.ts";
 import { clip_pages } from "./Clip.ts";
 import { Cloud, type Account, type User } from "./Cloud.ts";
@@ -180,6 +181,15 @@ const BATCH      = "/import.json";
 // under SPARE free, the disk takes no more (Chat.post)
 const SPARE      = 2 ** 30;
 
+// how often a worker looks for chats due a snapshot (Chat.backups): an
+// hour, or the time between two if less; where a restore is unpacked
+// (Main.restore), by user; the most it takes; what a form posts
+const HOUR       = 3600 * 1000;
+const BACKUPS    = Math.min(HOUR, config.BACKUP_EVERY * HOUR);
+const RESTORE    = config.DIR + "/restore/";
+const UPLOAD     = 2 ** 30;
+const FORMS      = ["application/x-www-form-urlencoded", "multipart/form-data", "text/plain"];
+
 // the acts with a body (Chat.post)
 const BODIES     = ["say", "import", "voice"];
 
@@ -267,12 +277,13 @@ export namespace Chat {
   // its credit pays it (a balance not told yet is none): its summaries
   // start once told. One
   // moving here takes what ran (`moved`); none opens as this process
-  // gives its chats away (null). A chat is kept only once open whole, so
-  // one that fails to (throws) is never left half open
+  // gives its chats away, nor as a restore replaces it (null). A chat is
+  // kept only once open whole, so one that fails to (throws) is never
+  // left half open
   export function open(user: User, moved: Moved | null = null, peer: Peer | null = null): Chat | null {
     const cloud = Chat.cloud;
     const old = Chat.chats.get(user.id);
-    if (old !== undefined || (Main.given && moved === null)) {
+    if (old !== undefined || (Main.given && moved === null) || Main.restores.has(user.id)) {
       return old ?? null;
     }
     const acct = { cloud, user: user.id };
@@ -964,6 +975,56 @@ export namespace Chat {
     }
   }
 
+  // Backups
+  // -------
+
+  // the users whose chat's last backup failed, by whether they were told;
+  // whether a pass of Chat.backups runs
+  export const unbacked = new Map<string, boolean>();
+  export let backing = false;
+
+  // each chat this worker serves that is due one, a snapshot (Backup.ts),
+  // one at a time; one whose command failed gets it again on its last
+  // snapshot each pass. A failure is a note in the chat (one closed opens
+  // for it; a user signed out is told once back), once till one works
+  // again. One pass at a time, none as this process gives its chats away
+  export async function backups(): Promise<void> {
+    const dir = config.DIR + "/users/";
+    if (Chat.backing) {
+      return;
+    }
+    Chat.backing = true;
+    try {
+      for (const id of fs.existsSync(dir) ? fs.readdirSync(dir) : []) {
+        await Main.here(id);
+        const out = config.BACKUP + "/" + id;
+        const due = Main.shard(id) === Main.index && !Main.given && Backup.due(dir + id, out, config.BACKUP_EVERY * HOUR);
+        if (!due && (!Chat.unbacked.has(id) || Main.given)) {
+          continue;
+        }
+        const why = due ? await Backup.run(dir + id, out, config.BACKUP_KEEP, config.BACKUP_RUN) : await Backup.hook(config.BACKUP_RUN, out + "/" + Backup.list(out).at(-1));
+        if (why === null) {
+          Chat.unbacked.delete(id);
+          continue;
+        }
+        console.error("backup of user " + id + " failed: " + why);
+        const user = Cloud.user(Chat.cloud, id);
+        const told = Chat.unbacked.get(id) === true;
+        Chat.unbacked.set(id, told || user !== null);
+        if (!told && user !== null) {
+          Main.event("a backup note of user " + id, () => {
+            const chat = Chat.chats.get(id) ?? Chat.open(user);
+            if (chat !== null) {
+              Chat.note(chat, "Backup failed: " + why.replace(/\.$/, "") + ". The server tries again within the hour.");
+            }
+          });
+        }
+      }
+    } finally {
+      Chat.backing = false;
+    }
+  }
+
   // the work a restart cut goes on, told so: each agent, and Unii's turn
   // by a note (none for a chat ended meanwhile)
   export async function resume(chat: Chat, work: string[]): Promise<void> {
@@ -1408,6 +1469,8 @@ export namespace Main {
   // the sockets open here, by user (SOCKETS; Bun opens one inside
   // server.upgrade, so none is opened past it)
   export const sockets = new Map<string, number>();
+  // the restores running, by user (Main.restore)
+  export const restores = new Map<string, Promise<void>>();
 
   // this process's address (Main.listen); every line to another, and those
   // it opened to calls' origins, by address; the calls it feeds to where
@@ -1453,7 +1516,8 @@ export namespace Main {
 
   // deletes the account of the user signed in, if they typed its name,
   // where their chat is: one the worker before still gives (a deploy) is
-  // waited for, so it ends before its files go
+  // waited for, so it ends before its files go, its backups (BACKUP) with
+  // them
   export async function close(req: Request): Promise<Response> {
     const cloud = Chat.cloud;
     const user = Cloud.who(cloud, req);
@@ -1476,7 +1540,87 @@ export namespace Main {
       return Response.json({ error: why }, { status: 409 });
     }
     fs.rmSync(config.DIR + "/users/" + user.id, { recursive: true, force: true });
+    if (config.BACKUP !== "") {
+      fs.rmSync(config.BACKUP + "/" + user.id, { recursive: true, force: true });
+    }
+    Chat.unbacked.delete(user.id);
     return Cloud.out();
+  }
+
+  // the chat of the user signed in, put back as a snapshot they upload
+  // had it (Backup.ts): read whole (at most UPLOAD; a form posts no tar,
+  // so no other site's page restores), unpacked and loaded aside, then
+  // their chat ends and the snapshot takes its place, the chat as it was
+  // first kept as a snapshot of its own if backups are on (none taken:
+  // none restored). One at a time; none as this process gives its chats
+  // away (one running ends first: Main.heard "go"). Once the upload is
+  // read, their requests and views wait till it is done (Main.here), then
+  // open the chat restored
+  export async function restore(req: Request): Promise<Response> {
+    const user = Cloud.who(Chat.cloud, req);
+    const type = (req.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
+    if (user === null) {
+      return new Response("sign in first", { status: 401 });
+    }
+    if (req.method !== "POST") {
+      return new Response("a restore is a POST", { status: 405 });
+    }
+    if (FORMS.includes(type)) {
+      return Response.json({ error: "A restore takes a .tar.gz backup." }, { status: 415 });
+    }
+    if (!Main.spend(USERS, user.id)) {
+      return Response.json({ error: "Too many requests: wait a moment." }, { status: 429 });
+    }
+    const disk = fs.statfsSync(config.DIR);
+    if (disk.bavail * disk.bsize < SPARE) {
+      return Response.json({ error: FULL }, { status: 507 });
+    }
+    const parts: Uint8Array[] = [];
+    const reader = req.body?.getReader();
+    let size = Number(req.headers.get("content-length") ?? 0) > UPLOAD ? Infinity : 0;
+    while (reader !== undefined && size <= UPLOAD) {
+      const piece = await reader.read();
+      if (piece.done) {
+        break;
+      }
+      size += piece.value.length;
+      parts.push(piece.value);
+    }
+    if (size > UPLOAD) {
+      return Response.json({ error: "This backup is too big to restore here." }, { status: 413 });
+    }
+    await Main.here(user.id);
+    if (Main.given || Main.restores.has(user.id)) {
+      return Response.json({ error: Main.given ? "UniiChat is restarting: try again in a moment." : "A restore of your chat is running." }, { status: 409 });
+    }
+    const done = Promise.withResolvers<void>();
+    Main.restores.set(user.id, done.promise);
+    const [dir, t, out] = [config.DIR + "/users/" + user.id, RESTORE + user.id, config.BACKUP + "/" + user.id];
+    try {
+      const why = await Backup.unpack(Buffer.concat(parts), t + "/new");
+      if (why !== null) {
+        return Response.json({ error: why }, { status: 400 });
+      }
+      const chat = Chat.chats.get(user.id);
+      await (chat === undefined ? Promise.resolve() : Chat.end(chat));
+      if (config.BACKUP !== "" && fs.existsSync(dir)) {
+        const kept = await Backup.write(dir, out).catch((err) => err);
+        if (typeof kept !== "string") {
+          return Response.json({ error: "Your chat as it is now could not be backed up first, so nothing was restored: " + (kept?.message ?? kept) }, { status: 500 });
+        }
+        Backup.prune(out, config.BACKUP_KEEP);
+        if (config.BACKUP_RUN !== "") {
+          Backup.hook(config.BACKUP_RUN, kept).then((why) => why !== null && console.error("backup of user " + user.id + " failed: " + why));
+        }
+      }
+      Backup.swap(t, dir);
+      Chat.cloud.billing.settle(user.id);
+      return Response.json({});
+    } finally {
+      fs.rmSync(t, { recursive: true, force: true });
+      Main.restores.delete(user.id);
+      done.resolve();
+    }
   }
 
   // a long answer, sent as made, a PIECE at a time, the event loop
@@ -1568,6 +1712,9 @@ export namespace Main {
       }
       if (p === "/api/delete") {
         return await Main.close(req);
+      }
+      if (p === "/api/restore") {
+        return await Main.restore(req);
       }
       if (!OWN.includes(p) && !p.startsWith("/image/") && !p.startsWith("/api/")) {
         return Main.file(p);
@@ -1669,6 +1816,7 @@ export namespace Main {
     Chat.cloud = Cloud.open(change, signed, post);
     Main.back = await Main.dial(hand);
     if (Main.back === null) {
+      Main.recover();
       Main.listed.resolve();
       Chat.wake();
     }
@@ -1732,6 +1880,11 @@ export namespace Main {
         chat.socks.forEach((sock) => sock.send(TICK));
       }
     }, PING / 2);
+    if (config.BACKUP !== "") {
+      const backups = () => Chat.backups().catch((err) => console.error("backups: " + (err?.message ?? err)));
+      backups();
+      setInterval(backups, BACKUPS);
+    }
     for (const sig of ["SIGTERM", "SIGINT", "SIGHUP"]) {
       process.on(sig, () => process.exit(0));
     }
@@ -1863,7 +2016,7 @@ export namespace Main {
         Main.server.stop();
         Main.given = true;
         Main.onward = msg.tools;
-        Main.listed.promise.then(() => {
+        Main.listed.promise.then(() => Promise.all(Main.restores.values())).then(() => {
           peer.send({ $: "users", addr: Main.addr, users: [...Chat.chats.keys(), ...Main.coming.keys()] });
           [...Chat.chats.values()].forEach((chat) => Chat.give(chat, peer, msg.tools));
           Main.done();
@@ -2074,10 +2227,24 @@ export namespace Main {
     return fetch("http://127.0.0.1:" + Main.port + url.pathname + url.search, { method: req.method, headers: req.headers, body: req.body, redirect: "manual" });
   }
 
-  // once the chat of `user` the worker before gives is here
+  // once the chat of `user` the worker before gives is here, and no
+  // restore of it runs (Main.restore)
   export async function here(user: string): Promise<void> {
     await Main.listed.promise;
     await Main.coming.get(user)?.promise;
+    while (Main.restores.has(user)) {
+      await Main.restores.get(user);
+    }
+  }
+
+  // what restores of this worker's users a crash cut left (Backup.recover),
+  // at a start with no worker before (none runs)
+  export function recover(): void {
+    for (const id of fs.existsSync(RESTORE) ? fs.readdirSync(RESTORE) : []) {
+      if (Main.shard(id) === Main.index) {
+        Backup.recover(RESTORE + id, config.DIR + "/users/" + id);
+      }
+    }
   }
 
   // once all it gives are

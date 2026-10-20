@@ -36,6 +36,14 @@ export const COMPACTOR  = config_run("compactor", config_get("compactor", "claud
 export const AGENTS     = config_get("agents", "") ? config_run("agents", config_get("agents", "")) : null;
 export const WORKERS    = Number(config_get("workers", "0"));
 
+// each chat's snapshots (Backup.ts): the dir they go to ("": none), the
+// hours between two, how many are kept, the shell command each is given
+// to (its path, $1)
+export const BACKUP       = config_path(config_get("backup", ""));
+export const BACKUP_EVERY = config_number("backup_every", "24");
+export const BACKUP_KEEP  = config_number("backup_keep", "7");
+export const BACKUP_RUN   = config_get("backup_run", "");
+
 // the iOS app (ios/, Cloud.ts): its App ID, the team's then the bundle's
 // ("TEAM.com.example.uniichat"), whose app sign-in links open; and
 // the id of the key its pushes are signed with (APNS_KEY holds the key)
@@ -60,6 +68,14 @@ export function config_get(key: string, def: string): string {
 
 function config_path(path: string): string {
   return path.startsWith("~/") ? os.homedir() + path.slice(1) : path;
+}
+
+function config_number(key: string, def: string): number {
+  const n = Number(config_get(key, def));
+  if (!(n > 0)) {
+    throw new Error("config: " + key + " is no number above 0: " + config_get(key, def));
+  }
+  return n;
 }
 
 function config_run(key: string, text: string): Pick {

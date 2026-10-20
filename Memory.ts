@@ -515,12 +515,13 @@ export namespace Memory {
 
   export function image_file(mem: Memory, name: string): string | null {
     const file = mem.dir + IMAGES + name;
-    return /^[0-9a-f]{16}\.[a-z]+$/.test(name) && fs.existsSync(file) ? file : null;
+    return /^[0-9a-f]{16}\.(png|jpeg|gif|webp)$/.test(name) && fs.existsSync(file) ? file : null;
   }
 
-  // what models get of message id's images: their copies, if any
+  // what models get of message id's images: their copies, if any; only
+  // files image_add names (a restored chat's message may name any)
   export function images(mem: Memory, id: number): Img[] {
-    const names = Memory.message(mem, id)?.images ?? [];
+    const names = (Memory.message(mem, id)?.images ?? []).filter((name) => Memory.image_file(mem, name) !== null);
     return names.map((name) => {
       const fit = fs.existsSync(mem.dir + IMAGES + name + ".jpg");
       const data = fs.readFileSync(mem.dir + IMAGES + name + (fit ? ".jpg" : "")).toString("base64");

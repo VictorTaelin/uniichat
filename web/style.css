@@ -384,15 +384,15 @@ header > .imping { display: flex; flex-direction: column; justify-content: cente
 #account .item p { margin: 0; font-weight: 500; overflow-wrap: anywhere; }
 #account .chip { min-width: 96px; }
 .item small { display: block; font-size: 13.5px; font-weight: 400; color: var(--mid); overflow-wrap: anywhere; }
-.kill { margin-top: 10px; padding: 16px; border-radius: 12px; background: var(--block); }
+.kill, .back-up { margin-top: 10px; padding: 16px; border-radius: 12px; background: var(--block); }
 .kill input { width: 100%; height: 44px; margin: 8px 0 16px; padding: 0 12px; border: 1px solid var(--frame); border-radius: 9px; background: var(--paper); color: var(--ink); font: 16px var(--sans); }
-.kill div { display: flex; gap: 8px; justify-content: flex-end; }
-.kill .chip { background: var(--paper); }
-.kill .chip.red { background: var(--red); color: var(--paper); }
-.kill p { margin: 0 0 8px; font-size: 14.5px; }
-.kill .why { color: var(--red); }
-.kill .why:empty { display: none; }
-.kill .chip:disabled { opacity: .4; cursor: default; }
+.kill div, .back-up div { display: flex; gap: 8px; justify-content: flex-end; }
+.kill .chip, .back-up .chip { background: var(--paper); }
+.kill .chip.red, .back-up .chip.red { background: var(--red); color: var(--paper); }
+.kill p, .back-up p { margin: 0 0 8px; font-size: 14.5px; }
+.kill .why, .back-up .why { color: var(--red); }
+.kill .why:empty, .back-up .why:empty { display: none; }
+.kill .chip:disabled, .back-up .chip:disabled { opacity: .4; cursor: default; }
 #account .foot { margin: 24px 0 0; font-size: 13px; color: var(--mid); }
 #account .foot a { text-decoration: none; }
 #account .foot a:hover { text-decoration: underline; }

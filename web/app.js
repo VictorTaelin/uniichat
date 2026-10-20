@@ -675,42 +675,42 @@ function block_parse(lines, i) {
     return [null, i + 1];
   }
   if (FENCE.test(line)) {
-    const end2 = runs((l) => !FENCE.test(l));
+    const end = runs((l) => !FENCE.test(l));
     const k = line.trim().slice(3).trim();
-    const x2 = lines.slice(i + 1, end2).join(`
+    const x = lines.slice(i + 1, end).join(`
 `);
-    return [{ $: "Code", k, x: x2 }, end2 + 1];
+    return [{ $: "Code", k, x }, end + 1];
   }
   if (head !== null) {
-    const x2 = span_parse(head[2]);
-    return [{ $: "Head", k: head[1].length, x: x2 }, i + 1];
+    const x = span_parse(head[2]);
+    return [{ $: "Head", k: head[1].length, x }, i + 1];
   }
   if (RULE.test(line)) {
     return [{ $: "Rule" }, i + 1];
   }
   if (QUOT.test(line)) {
-    const end2 = runs((l) => QUOT.test(l));
-    const body = lines.slice(i, end2).map((l) => l.replace(QUOT, ""));
+    const end = runs((l) => QUOT.test(l));
+    const body = lines.slice(i, end).map((l) => l.replace(QUOT, ""));
     return [{ $: "Quot", x: md_parse(body.join(`
-`)) }, end2];
+`)) }, end];
   }
   if (numbered !== null) {
     const item = (l) => list_numbered(l) === numbered;
-    const end2 = runs((l) => item(l) || MORE.test(l));
+    const end = runs((l) => item(l) || MORE.test(l));
     const items = [];
-    for (const l of lines.slice(i, end2)) {
+    for (const l of lines.slice(i, end)) {
       if (item(l)) {
         items.push(l.replace(LIST, ""));
       } else {
         items[items.length - 1] += " " + l.trim();
       }
     }
-    return [{ $: "List", k: numbered, x: items.map(span_parse) }, end2];
+    return [{ $: "List", k: numbered, x: items.map(span_parse) }, end];
   }
   if (ROW.test(line) && BAR.test(lines[i + 1] ?? "")) {
-    const end2 = lines_run(lines, i + 1, (l) => ROW.test(l));
-    const rows = [line, ...lines.slice(i + 2, end2)];
-    return [{ $: "Tabl", x: rows.map(row_cells) }, end2];
+    const end = lines_run(lines, i + 1, (l) => ROW.test(l));
+    const rows = [line, ...lines.slice(i + 2, end)];
+    return [{ $: "Tabl", x: rows.map(row_cells) }, end];
   }
   const end = runs((l, j) => l.trim() !== "" && !block_starts(lines, j));
   const x = lines.slice(i, end).map(span_parse);
@@ -753,25 +753,25 @@ var EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 var SPEEDS = ["slow", "fast", "ultrafast"];
 var LABELS = [...new Set(Object.values(MODELS).flat().map((m) => m.label))];
 var Pick;
-((Pick) => {
-  function model(vendor, label2) {
-    return MODELS[vendor].find((m) => m.label === label2);
+((Pick2) => {
+  function model(vendor, label) {
+    return MODELS[vendor].find((m) => m.label === label);
   }
-  Pick.model = model;
-  function on(pick, vendor, model2) {
+  Pick2.model = model;
+  function on(pick, vendor, model) {
     const below = SPEEDS.slice(0, SPEEDS.indexOf(pick.speed) + 1);
-    const speed = below.filter((s) => model2.speeds.includes(s)).pop() ?? "slow";
-    return { ...pick, vendor, model: model2.label, speed };
+    const speed = below.filter((s) => model.speeds.includes(s)).pop() ?? "slow";
+    return { ...pick, vendor, model: model.label, speed };
   }
-  Pick.on = on;
+  Pick2.on = on;
   function models(vendors, labels) {
     return vendors.flatMap((v) => MODELS[v].filter((m) => labels.includes(m.label)).map((m) => [v, m]));
   }
-  Pick.models = models;
-  function options(pick, move2, { vendors, models: models2 }) {
+  Pick2.models = models;
+  function options(pick, move, { vendors, models }) {
     const speeds = Pick.model(pick.vendor, pick.model)?.speeds ?? [];
-    const all = (vs) => Pick.models(vs, models2).map(([v, m]) => [m.label, Pick.on(pick, v, m)]);
-    switch (move2) {
+    const all = (vs) => Pick.models(vs, models).map(([v, m]) => [m.label, Pick.on(pick, v, m)]);
+    switch (move) {
       case "next":
       case "prev":
       case "model": {
@@ -787,40 +787,40 @@ var Pick;
       }
     }
   }
-  Pick.options = options;
-  function move(pick, move2, offer, to) {
-    const list = Pick.options(pick, move2, offer);
+  Pick2.options = options;
+  function move(pick, move, offer, to) {
+    const list = Pick.options(pick, move, offer);
     const n = list.length;
     const at = list.findIndex(([, p]) => Pick.label(p) === Pick.label(pick));
-    const d = move2 === "prev" || move2 === "down" ? -1 : 1;
-    const ends = move2 === "up" || move2 === "down";
+    const d = move === "prev" || move === "down" ? -1 : 1;
+    const ends = move === "up" || move === "down";
     const next = ends ? Math.max(0, Math.min(n - 1, at + d)) : (at + d + n) % n;
     const like = list.filter(([part]) => part.toLowerCase().includes(String(to).toLowerCase()));
     const hit = to === undefined ? list[next] : list.find(([part]) => part === to) ?? (like.length === 1 ? like[0] : undefined);
     return hit === undefined ? null : hit[1];
   }
-  Pick.move = move;
+  Pick2.move = move;
   function label(pick) {
     return [pick.vendor, pick.model, pick.effort, pick.speed].join(":");
   }
-  Pick.label = label;
+  Pick2.label = label;
   function ask(pick) {
-    const model2 = Pick.model(pick.vendor, pick.model);
-    return { ...pick, model: model2?.id ?? pick.model };
+    const model = Pick.model(pick.vendor, pick.model);
+    return { ...pick, model: model?.id ?? pick.model };
   }
-  Pick.ask = ask;
+  Pick2.ask = ask;
   function read(x, offer) {
-    const model2 = offer.vendors.includes(x.vendor) && offer.models.includes(x.model) ? Pick.model(x.vendor, x.model) : undefined;
-    if (model2 === undefined || !EFFORTS.includes(x.effort) || !model2.speeds.includes(x.speed)) {
+    const model = offer.vendors.includes(x.vendor) && offer.models.includes(x.model) ? Pick.model(x.vendor, x.model) : undefined;
+    if (model === undefined || !EFFORTS.includes(x.effort) || !model.speeds.includes(x.speed)) {
       return null;
     }
     return { vendor: x.vendor, model: x.model, effort: x.effort, speed: x.speed };
   }
-  Pick.read = read;
+  Pick2.read = read;
   function load(saved, offer, def) {
     return Pick.read(saved ?? def, offer) ?? def;
   }
-  Pick.load = load;
+  Pick2.load = load;
 })(Pick ||= {});
 
 // Price.ts
@@ -842,31 +842,31 @@ var MINUTES = {
 };
 var SPEEDS2 = { slow: 1, fast: 2, ultrafast: 6 };
 var Price;
-((Price) => {
+((Price2) => {
   function usage(speed) {
     return { input: 0, write: 0, read: 0, output: 0, searches: 0, seconds: 0, speed };
   }
-  Price.usage = usage;
+  Price2.usage = usage;
   function rate(model) {
     return RATES[model];
   }
-  Price.rate = rate;
+  Price2.rate = rate;
   function times(speed) {
     return SPEEDS2[speed] ?? 1;
   }
-  Price.times = times;
+  Price2.times = times;
   function cost(model, use) {
     const long = use.input + use.write + use.read > PROMPT ? LONG[model] : undefined;
-    const rate2 = long ?? RATES[model];
+    const rate = long ?? RATES[model];
     const minute = MINUTES[model];
-    if (rate2 === undefined && minute === undefined) {
+    if (rate === undefined && minute === undefined) {
       throw new Error("no price for " + model);
     }
-    const tokens = rate2 === undefined ? 0 : use.input * rate2.input + use.write * rate2.write + use.read * rate2.read + use.output * rate2.output;
+    const tokens = rate === undefined ? 0 : use.input * rate.input + use.write * rate.write + use.read * rate.read + use.output * rate.output;
     const audio = minute === undefined ? 0 : use.seconds / 60 * minute * 1e6;
     return Math.ceil(tokens * Price.times(use.speed) + use.searches * SEARCH * 1e6 + audio);
   }
-  Price.cost = cost;
+  Price2.cost = cost;
 })(Price ||= {});
 
 // View.ts
@@ -1282,8 +1282,8 @@ function part_rows(v, id, n, t, talk) {
   }
   const text = n === 1 ? "fold" : GLYPH.open + " " + n + "x · fold";
   if (n > 1) {
-    const rows2 = [...part_rows(v, id, half, t, talk), ...part_rows(v, id + half, half, t, talk)];
-    return [{ $: "Box", id, n, text, rows: rows2 }];
+    const rows = [...part_rows(v, id, half, t, talk), ...part_rows(v, id + half, half, t, talk)];
+    return [{ $: "Box", id, n, text, rows }];
   }
   const rows = entry === undefined ? [] : whole_rows(id, entry);
   return [{ $: "Box", id, n, text, rows }];
@@ -1470,12 +1470,14 @@ function account_html(a, app) {
   const item = (what, note, act) => `<div class="item"><p>${what}${note === "" ? "" : `<small>${note}</small>`}</p>${act}</div>`;
   const closes = a.bills ? `<p>This also closes your BendAI account (same sign-in). Credit you bought and didn't use goes back to your card.</p>` : "";
   const kill = `<form class="kill" hidden>${closes}<p>Type <b>${esc(a.name)}</b> to confirm.</p><input name="name" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="${esc(a.name)}"><p class="why"></p><div><button type="button" class="chip keep">Cancel</button><button class="chip red" disabled>Delete for good</button></div></form>`;
+  const back = `<form class="back-up" hidden><p>Replace your chat and Unii's memory with <b class="file"></b>? What they hold now is replaced.</p><p class="why"></p><div><button type="button" class="chip keep">Cancel</button><button class="chip red">Restore</button></div></form>`;
   const acts = [
     item(esc(a.name), "", `<button class="chip out">Sign out</button>`),
     item("Export memory", "Chat and account, in one file.", `<a class="chip" href="/export">Download</a>`),
+    item("Restore a backup", "Chat and memory, from a .tar.gz backup.", `<button class="chip up">Upload</button><input class="pick" type="file" accept=".gz,.tgz,application/gzip" hidden>`),
     item("Delete account", "Erases chat and memory for good.", `<button class="chip red del">Delete</button>`)
   ];
-  const account = section_html("Sign-in and data", acts.join("") + kill);
+  const account = section_html("Sign-in and data", acts.join("") + back + kill);
   const links = a.bills ? `<p class="foot"><a href="/pricing" target="_blank">Prices</a> · <a href="/terms.html" target="_blank">Terms</a> · <a href="/privacy.html" target="_blank">Privacy</a> · <a href="mailto:contact@higherorderco.com">Help</a></p>` : "";
   return `<a class="back" href="/" data-go="/">← Chat</a><h1>Account</h1>` + money + account + links;
 }
@@ -1883,8 +1885,8 @@ function meter(stream, rec) {
   requestAnimationFrame(frame);
 }
 function words(audio) {
-  const act2 = { $: "voice", type: audio.type, body: () => audio };
-  link_send(v, act2, heard);
+  const act = { $: "voice", type: audio.type, body: () => audio };
+  link_send(v, act, heard);
   draw(false);
 }
 function heard(out) {
@@ -2317,12 +2319,46 @@ async function account() {
     sure(true);
     name.focus();
   };
-  $("#account .keep").onclick = () => sure(false);
+  $("#account .kill .keep").onclick = () => sure(false);
+  account_restore();
   name.oninput = () => kill.querySelector(".red").disabled = name.value.trim().toLowerCase() !== a.name.toLowerCase();
   $("#account .out").onclick = signout;
   kill.onsubmit = (ev) => {
     ev.preventDefault();
     account_delete(kill);
+  };
+}
+function account_restore() {
+  const form = $("#account .back-up");
+  const pick = $("#account .pick");
+  const up = $("#account .up");
+  const sure = (open2) => {
+    form.hidden = !open2;
+    up.hidden = open2;
+    form.querySelector(".why").textContent = "";
+  };
+  up.onclick = () => pick.click();
+  pick.onchange = () => {
+    form.querySelector(".file").textContent = pick.files?.[0]?.name ?? "";
+    sure(pick.files?.length === 1);
+  };
+  form.querySelector(".keep").onclick = () => {
+    pick.value = "";
+    sure(false);
+  };
+  form.onsubmit = async (ev) => {
+    ev.preventDefault();
+    const go = form.querySelector(".red");
+    [go.disabled, go.textContent] = [true, "Restoring…"];
+    form.querySelector(".why").textContent = "";
+    const res = await fetch("/api/restore", { method: "POST", headers: { "content-type": "application/gzip" }, body: pick.files[0] }).catch(() => null);
+    const out = res === null ? { error: "Can't reach the server." } : await res.json().catch(() => res.ok ? {} : { error: "HTTP " + res.status });
+    [go.disabled, go.textContent] = [false, "Restore"];
+    if (res?.ok === true) {
+      location.href = "/";
+      return;
+    }
+    form.querySelector(".why").textContent = out.error;
   };
 }
 async function signout() {

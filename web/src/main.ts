@@ -981,12 +981,49 @@ async function account(): Promise<void> {
     sure(true);
     name.focus();
   };
-  $("#account .keep").onclick = () => sure(false);
+  $("#account .kill .keep").onclick = () => sure(false);
+  account_restore();
   name.oninput = () => (kill.querySelector<HTMLButtonElement>(".red")!.disabled = name.value.trim().toLowerCase() !== a.name.toLowerCase());
   $("#account .out").onclick = signout;
   kill.onsubmit = (ev) => {
     ev.preventDefault();
     account_delete(kill);
+  };
+}
+
+// a backup picked (Backup.ts), restored once confirmed; then the chat,
+// as restored
+function account_restore(): void {
+  const form = $<HTMLFormElement>("#account .back-up");
+  const pick = $<HTMLInputElement>("#account .pick");
+  const up   = $<HTMLButtonElement>("#account .up");
+  const sure = (open: boolean) => {
+    form.hidden = !open;
+    up.hidden = open;
+    form.querySelector(".why")!.textContent = "";
+  };
+  up.onclick = () => pick.click();
+  pick.onchange = () => {
+    form.querySelector(".file")!.textContent = pick.files?.[0]?.name ?? "";
+    sure(pick.files?.length === 1);
+  };
+  form.querySelector<HTMLButtonElement>(".keep")!.onclick = () => {
+    pick.value = "";
+    sure(false);
+  };
+  form.onsubmit = async (ev) => {
+    ev.preventDefault();
+    const go = form.querySelector<HTMLButtonElement>(".red")!;
+    [go.disabled, go.textContent] = [true, "Restoring…"];
+    form.querySelector(".why")!.textContent = "";
+    const res = await fetch("/api/restore", { method: "POST", headers: { "content-type": "application/gzip" }, body: pick.files![0] }).catch(() => null);
+    const out = res === null ? { error: "Can't reach the server." } : await res.json().catch(() => (res.ok ? {} : { error: "HTTP " + res.status }));
+    [go.disabled, go.textContent] = [false, "Restore"];
+    if (res?.ok === true) {
+      location.href = "/";
+      return;
+    }
+    form.querySelector(".why")!.textContent = out.error;
   };
 }
 
