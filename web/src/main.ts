@@ -230,6 +230,8 @@ function chat(): void {
     submit();
   };
   $(".attach").onclick = () => file.click();
+  $("#pick").onkeydown = roam;
+  $("#pick").addEventListener("focusout", left);
   $("#menu .out").onclick = signout;
   $(".mic").onclick = mic;
   file.onchange = () => {
@@ -329,15 +331,20 @@ function act(a: View.Act): void {
   draw(a.$ === "Send");
 }
 
-// a click on a View.Act, a Copy button, a page (go) or credit to buy
-// (Html.ts), unless it ends a selection dragged in
+// a click on a View.Act, a Copy button, a page (go), credit to buy, a
+// knob or its menu's row (Html.ts), unless it ends a selection dragged in
 // its element
 function click(ev: MouseEvent): void {
-  const el = (ev.target as HTMLElement).closest<HTMLElement>("[data-act], [data-copy], [data-go], [data-usd]");
+  const el = (ev.target as HTMLElement).closest<HTMLElement>("[data-act], [data-copy], [data-go], [data-usd], [data-knob], .choices > button");
   const sel = getSelection();
   if (el === null || (sel !== null && !sel.isCollapsed && el.contains(sel.focusNode))) {
     return;
   }
+  if (el.dataset.knob !== undefined) {
+    place(el);
+    return;
+  }
+  el.closest<HTMLElement>(".choices")?.hidePopover();
   const { act: a, copy: text, go: path, usd } = el.dataset;
   const menu = el.closest("#menu") !== null;
   if (menu) {
@@ -355,6 +362,53 @@ function click(ev: MouseEvent): void {
   }
   if (text !== undefined) {
     navigator.clipboard.writeText(text).then(() => copied(el), () => toast("Could not copy."));
+  }
+}
+
+// a knob's menu, before it opens (the knob's own click opens and closes
+// it): over the knob, its right edge at the knob's, as tall and wide as
+// the screen has room for (style.css: it scrolls past that)
+function place(knob: HTMLElement): void {
+  const menu = $("#pick-" + knob.dataset.knob);
+  const box = knob.getBoundingClientRect();
+  const { clientWidth: w, clientHeight: h } = document.documentElement;
+  const right = Math.max(8, w - box.right);
+  menu.style.right = right + "px";
+  menu.style.bottom = h - box.top + 4 + "px";
+  menu.style.maxWidth = w - right - 8 + "px";
+  menu.style.maxHeight = box.top - 12 + "px";
+}
+
+// in a knob's menu, the arrows go down and up its rows, Home and End to
+// its ends (Tab too goes through them; Escape, a click out, or Tab out
+// either end closes it)
+function roam(ev: KeyboardEvent): void {
+  const menu = (ev.target as HTMLElement).closest<HTMLElement>(".choices");
+  // back to its knob: a click there toggles it, so left() keeps it open
+  if (menu !== null && ev.key === "Tab" && ev.shiftKey && ev.target === menu.querySelector("button")) {
+    ev.preventDefault();
+    menu.hidePopover();
+    (menu.previousElementSibling as HTMLElement).focus();
+    return;
+  }
+  if (menu === null || !["ArrowDown", "ArrowUp", "Home", "End"].includes(ev.key)) {
+    return;
+  }
+  ev.preventDefault();
+  const rows = [...menu.querySelectorAll<HTMLElement>("button")];
+  const n = rows.length;
+  const at = rows.indexOf(document.activeElement as HTMLElement);
+  const to: Record<string, number> = { ArrowDown: at + 1, ArrowUp: at - 1 + n, Home: 0, End: n - 1 };
+  rows[to[ev.key] % n].focus();
+}
+
+// focus tabbed out of a knob's menu closes it; but to its knob, whose
+// click closes it, or to nothing (a tap on a row may not focus it)
+function left(ev: FocusEvent): void {
+  const menu = (ev.target as HTMLElement).closest<HTMLElement>(".choices:popover-open");
+  const to = ev.relatedTarget as Node | null;
+  if (menu !== null && to !== null && !menu.contains(to) && to !== menu.previousElementSibling) {
+    menu.hidePopover();
   }
 }
 
@@ -916,7 +970,12 @@ function bars(): void {
   $(".mic").classList.toggle("rec", P.rec !== null);
   $(".composer").classList.toggle("off", !on);
   $(".composer").classList.toggle("rec", P.rec !== null);
+  // a knob focused (its menu just closed) stays so as its value changes
+  const knob = (document.activeElement as HTMLElement | null)?.dataset?.knob;
   markup($("#pick"), Html.pick_html(View.view_fold(v), v.fold === null, View.view_pick(v)));
+  if (knob !== undefined) {
+    $("#pick [data-knob=" + knob + "]").focus();
+  }
   $("#tabs").hidden = tabs.length < 2;
   markup($("#tabs"), Html.tabs_html(tabs));
   import_bar();

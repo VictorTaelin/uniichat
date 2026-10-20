@@ -93,7 +93,7 @@ header > .brand:hover { background: none; }
 header .credits { font: 500 12.5px var(--mono); }
 header .net { font-size: 13px; color: var(--mid); }
 
-/* Footer: the rule with the pick (a click on a part moves it), the
+/* Footer: the rule with the pick (a click on a part opens its menu), the
    images waiting, the message box, the tabs (while agents work), and a
    guest's consent; over the log, as the header, and as low as it goes,
    so a phone with its keyboard up still shows the chat; the account
@@ -103,9 +103,17 @@ body.account footer { position: fixed; inset: auto 0 0; background: none; pointe
 body.account footer > :not(#toast) { display: none; }
 #pick { width: min(var(--col), 100%); margin: 0 auto 6px; display: flex; align-items: center; gap: 6px; font: 12.5px/20px var(--sans); color: var(--mid); }
 #pick .rule { flex: 1; height: 1px; background: var(--hair); margin-right: 4px; }
-#pick button { padding: 0 6px; border-radius: 6px; }
-#pick button:hover { background: var(--block); color: var(--ink); }
+#pick > button { padding: 0 6px; border-radius: 6px; }
+#pick > button:hover, #pick > button:has(+ :popover-open) { background: var(--block); color: var(--ink); }
 #pick .dot { color: var(--soft); }
+/* a knob's menu (main.ts places it over its knob): a row per value, the
+   pick's checked; a model's vendor over its group */
+#pick .choices { inset: auto; width: max-content; min-width: 150px; padding: 6px; overflow: auto; font: 14px/20px var(--sans); }
+#pick .choices p { margin: 6px 8px 2px; font-size: 12px; color: var(--mid); }
+#pick .choices > button { display: flex; padding: 7px 10px 7px 28px; }
+#pick .choices > button:focus-visible { outline: 2px solid var(--soft); outline-offset: -2px; }
+#pick .choices [aria-checked=true] { font-weight: 600; }
+#pick .choices [aria-checked=true]::before { content: "✓"; content: "✓" / ""; position: absolute; margin-left: -18px; }
 
 .composer { width: min(var(--col), 100%); margin: 0 auto; display: flex; align-items: flex-end; gap: 10px; border: 1px solid var(--frame); border-radius: 24px; padding: 7px 7px 7px 20px; background: var(--lift); box-shadow: var(--shadow); }
 .composer:focus-within { border-color: var(--soft); }
@@ -323,8 +331,8 @@ header > .imping { display: flex; flex-direction: column; justify-content: cente
 /* a finger needs 44px: small buttons take taps around them (a box
    centered on each, not drawn), links in small print above and below */
 @media (pointer: coarse) {
-  :is(header > button, #pick button, #tabs button) { position: relative; }
-  :is(header > button, #pick button, #tabs button, .copy, .open.one > .fold)::after { content: ""; position: absolute; left: 50%; top: 50%; width: max(100%, 44px); height: max(100%, 44px); transform: translate(-50%, -50%); }
+  :is(header > button, #pick > button, #tabs button) { position: relative; }
+  :is(header > button, #pick > button, #tabs button, .copy, .open.one > .fold)::after { content: ""; position: absolute; left: 50%; top: 50%; width: max(100%, 44px); height: max(100%, 44px); transform: translate(-50%, -50%); }
   :is(.ai, .fine, .foot) a { padding: 14px 0; }
   :is(.chip, .usd button) { height: 44px; }
   [popover] > button { min-height: 44px; }

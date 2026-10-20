@@ -105,11 +105,23 @@ function images_html(names: string[]): string {
 }
 
 // the line over the message box: fold/unfold (none on an agent's page),
-// a rule, then the pick's knobs
+// a rule, then the pick's knobs, each opening its menu (the browser's
+// popover, placed by main.ts)
 export function pick_html(fold: string | null, on: boolean, knobs: View.Knob[]): string[] {
-  const parts = knobs.map((k) => `<button title="${esc(k.hint)}"${act_html({ $: "Move", move: k.move })}>${esc(k.text)}</button>`);
+  const parts = knobs.map((k) => [
+    `<button title="${esc(k.hint)}" data-knob="${k.move}" popovertarget="pick-${k.move}" aria-haspopup="menu">${esc(k.text)}</button>`,
+    `<div id="pick-${k.move}" class="choices" popover role="menu" aria-label="${k.move[0].toUpperCase() + k.move.slice(1)}">${k.choices.map(choice_html).join("")}</div>`,
+  ]);
   const all = fold === null ? [] : [`<button class="all"${act_html({ $: "Fold", on })}>${esc(fold)}</button>`];
-  return [...all, `<span class="rule"></span>`, ...parts.flatMap((part, i) => (i === 0 ? [part] : [`<span class="dot">·</span>`, part]))];
+  return [...all, `<span class="rule"></span>`, ...parts.flatMap((part, i) => (i === 0 ? part : [`<span class="dot">·</span>`, ...part]))];
+}
+
+// a menu's row: a model's vendor over its first; the pick's marked and
+// focused as the menu opens, its click only closing it
+function choice_html(c: View.Choice): string {
+  const head = c.vendor === null ? "" : `<p>${esc(c.vendor)}</p>`;
+  const act  = c.here ? " autofocus" : act_html({ $: "Move", move: c.move, to: c.to });
+  return `${head}<button role="menuitemradio" aria-checked="${c.here}"${act}>${esc(c.text)}</button>`;
 }
 
 export function tabs_html(tabs: View.Tab[]): string[] {
