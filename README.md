@@ -99,19 +99,37 @@ Keys are read from the environment: `ANTHROPIC_API_KEY`,
 print), `APNS_KEY`.
 
 Or sealed, so none sits in a file in plain text: start once with the
-keys and a passphrase set,
+keys and a passphrase given, e.g. typed unseen into this shell's
+environment (not on the command line, which history keeps),
 
-    ANTHROPIC_API_KEY=sk-ant-... UNII_PASSPHRASE=... bun Server.ts
+    read -rs ANTHROPIC_API_KEY; export ANTHROPIC_API_KEY
+    read -rs UNII_PASSPHRASE; export UNII_PASSPHRASE
+    bun Server.ts
 
 and the server seals them in `~/.unii/keys.enc` (AES-256-GCM, by a key
 scrypt makes of the passphrase; 600). Then drop them from wherever they
-were set. Each later start needs only the passphrase: `UNII_PASSPHRASE`,
-else typed at the terminal it starts at. A key set in the environment
+were set (`unset` them). Each later start needs only the passphrase,
+from the first of:
+
+- `UNII_PASSPHRASE`. Taken out of the environment once read, but the
+  server's `/proc/<pid>/environ` still shows it, to every program run
+  as you while the server runs.
+- `UNII_PASSPHRASE_FILE`, a file holding it (600; a last newline
+  doesn't count), e.g. a systemd credential: `LoadCredential=` (or
+  `LoadCredentialEncrypted=`) `unii-passphrase:/path/to/it` in the
+  unit, which the server reads from `$CREDENTIALS_DIRECTORY` with no
+  variable set.
+- Typed at the terminal the server starts at (none: it won't start).
+
+Spaces at either end of it don't count. A key set in the environment
 beside it wins and is sealed in, so that is how one is added or changed
-(to drop one, delete keys.enc and seal anew). Typed, the passphrase is
-kept on no disk, so a program run as you (an agent's shell) finds the
-keys only sealed; set in a file, it guards copies of ~/.unii, not that
-file.
+(to drop one, delete keys.enc and seal anew).
+
+This guards the keys at rest: a copy or backup of ~/.unii, a config
+file that leaks. Not from code running as you while the server is up
+(an agent's shell, if it runs as you): that can read the server's
+memory (ptrace) or what /proc shows of it, and the passphrase where it
+is kept. Run the server as a user of its own for that.
 
 With only an OpenAI key, set `vendors`, `pick` and `compactor` to
 `openai-api` models, e.g. `UNII_VENDORS=openai-api

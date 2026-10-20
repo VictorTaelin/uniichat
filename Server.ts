@@ -2090,10 +2090,12 @@ export namespace Main {
   // UNII_WORKER=k, the keys on its stdin): holds the lock, starts again
   // a worker that dies, answers each request with its worker's address
   // (`x-unii-worker`: README; past its network's limit, NETS, 429),
-  // relays a worker's word to all, sends their mail. A deploy (SIGHUP) starts each worker anew,
-  // which takes the chats of the one before (Main.start); one that fails
-  // to start leaves that one serving. Its own code changes only on a
-  // restart
+  // relays a worker's word to all, sends their mail. A deploy (SIGHUP)
+  // starts each worker anew, which takes the chats of the one before
+  // (Main.start); one that fails to start leaves that one serving. Its
+  // own code changes only on a restart, so a deploy of code that takes
+  // the keys otherwise (config.HANDOVER) is refused: its workers would
+  // start on none
   export function supervise(port: number, run: string[]): void {
     const cloud = Cloud.open(() => {}, () => {}, async () => null);
     const workers: Bun.Subprocess[] = [];
@@ -2117,8 +2119,13 @@ export namespace Main {
     const start = (k: number) => {
       const env = { ...process.env, UNII_WORKER: String(k), BUN_CONFIG_MAX_HTTP_REQUESTS: String(FETCHES) };
       const ipc = (msg: any, proc: Bun.Subprocess) => hear(k, proc, msg);
-      const stdin = new Blob([config.config_hand()]);
-      const proc = Bun.spawn([...run, String(port + 1 + k)], { env, ipc, stdin, stdout: "inherit", stderr: "inherit" });
+      // a pipe, which holds the keys only until the worker reads them
+      // (a Blob would stay readable at /proc/<worker>/fd/0)
+      const proc = Bun.spawn([...run, String(port + 1 + k)], { env, ipc, stdin: "pipe", stdout: "inherit", stderr: "inherit" });
+      try {
+        proc.stdin.write(config.config_hand());
+        Promise.resolve(proc.stdin.end()).catch(() => {});
+      } catch {}
       all.add(proc);
       proc.exited.then((code) => {
         all.delete(proc);
@@ -2147,8 +2154,24 @@ export namespace Main {
     for (const sig of ["SIGTERM", "SIGINT"]) {
       process.on(sig, stop);
     }
-    process.on("SIGHUP", () => workers.forEach((_, k) => start(k)));
+    process.on("SIGHUP", () => {
+      if (!Main.hands(import.meta.dir + "/Config.ts")) {
+        console.error("unii: deploy refused: that code takes the keys otherwise than this server hands them (Config.ts HANDOVER); restart the server instead");
+        return;
+      }
+      workers.forEach((_, k) => start(k));
+    });
     console.log("unii: " + config.SITE + ", " + config.WORKERS + " workers on 127.0.0.1:" + (port + 1) + "-" + (port + config.WORKERS) + ", routes on " + port);
+  }
+
+  // whether the Config.ts at `path` takes a worker's keys as this one
+  // hands them (its HANDOVER line alike)
+  export function hands(path: string): boolean {
+    try {
+      return new RegExp("^export const HANDOVER = " + config.HANDOVER + ";$", "m").test(fs.readFileSync(path, "utf8"));
+    } catch {
+      return false;
+    }
   }
 
   // a worker ended (`now`: worker k's, the last that started): as the
