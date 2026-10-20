@@ -393,6 +393,16 @@ header > .imping { display: flex; flex-direction: column; justify-content: cente
 .kill .why { color: var(--red); }
 .kill .why:empty { display: none; }
 .kill .chip:disabled { opacity: .4; cursor: default; }
+/* a prompt's editor (SOUL.md, an owner's base prompt): its note, its
+   text (16px on touch, as above), then what saving said beside Save
+   (red: refused) */
+.prompt .note { margin: 0 0 10px; font-size: 14px; color: var(--mid); }
+.prompt textarea { display: block; box-sizing: border-box; width: 100%; min-height: 140px; padding: 10px 12px; border: 1px solid var(--frame); border-radius: 9px; background: var(--paper); color: var(--ink); font: 14px/1.5 var(--mono); resize: vertical; }
+@media (hover: none) { .prompt textarea { font-size: 16px; } }
+.prompt div { display: flex; gap: 12px; align-items: center; justify-content: flex-end; margin-top: 10px; }
+.prompt .why { margin: 0; font-size: 13.5px; color: var(--mid); }
+.prompt.bad .why { color: var(--red); }
+.prompt .chip:disabled { opacity: .4; cursor: default; }
 #account .foot { margin: 24px 0 0; font-size: 13px; color: var(--mid); }
 #account .foot a { text-decoration: none; }
 #account .foot a:hover { text-decoration: underline; }

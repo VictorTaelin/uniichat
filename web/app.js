@@ -1460,7 +1460,7 @@ function fine_html(app) {
   const fee = app ? "Paid at the App Store's price." : "+10% platform fee (min $0.80).";
   return `<p class="fine">${fee} Buying accepts the <a href="/terms.html" target="_blank">terms</a>.</p>`;
 }
-function account_html(a, app) {
+function account_html(a, app, soul) {
   const tops = a.topups ?? [];
   const days = account_days(a);
   const balance = a.credits === null ? "" : section_html("Balance", `<p class="big">${usd_show(a.credits)}</p>` + credit_html(app));
@@ -1476,8 +1476,15 @@ function account_html(a, app) {
     item("Delete account", "Erases chat and memory for good.", `<button class="chip red del">Delete</button>`)
   ];
   const account = section_html("Sign-in and data", acts.join("") + kill);
+  const unread = item("Could not read your instructions.", "", `<button class="chip retry">Try again</button>`);
+  const mine = section_html("Your instructions", soul === null ? unread : prompt_html("soul", soul.soul, "Who you are, what Unii goes by, its tone: your SOUL.md, in every prompt Unii and its agents get.", "I'm Sam, a designer in Lisbon. Call yourself Kit. Be brief and warm."));
+  const base = soul?.base === undefined ? "" : section_html("Base prompt", prompt_html("base", soul.base, "Unii's prompt for every user of this server, in place of the built-in one (you own the server). Empty: the built-in one.", ""));
   const links = a.bills ? `<p class="foot"><a href="/pricing" target="_blank">Prices</a> · <a href="/terms.html" target="_blank">Terms</a> · <a href="/privacy.html" target="_blank">Privacy</a> · <a href="mailto:contact@higherorderco.com">Help</a></p>` : "";
-  return `<a class="back" href="/" data-go="/">← Chat</a><h1>Account</h1>` + money + account + links;
+  return `<a class="back" href="/" data-go="/">← Chat</a><h1>Account</h1>` + money + mine + base + account + links;
+}
+function prompt_html(name, text, note, hint) {
+  const area = `<textarea name="${name}" rows="8" spellcheck="false" placeholder="${esc(hint)}">${esc(text)}</textarea>`;
+  return `<form class="prompt"><p class="note">${esc(note)}</p>${area}<div><p class="why"></p><button class="chip">Save</button></div></form>`;
 }
 function section_html(title, body) {
   return `<section><h2>${esc(title)}</h2>${body}</section>`;
@@ -2299,13 +2306,19 @@ function route() {
 }
 async function account() {
   const el = $("#account");
-  const res = await fetch("/api/account").catch(() => null);
+  const [res, got] = await Promise.all([fetch("/api/account").catch(() => null), fetch("/api/soul").catch(() => null)]);
   const a = res !== null && res.ok ? await res.json() : null;
+  const soul = got !== null && got.ok ? await got.json().catch(() => null) : null;
   if (a === null) {
     el.innerHTML = `<p class="sub">Could not read your account. Try again in a moment.</p>`;
     return;
   }
-  el.innerHTML = account_html(a, APP !== null);
+  el.innerHTML = account_html(a, APP !== null, soul);
+  el.querySelectorAll("form.prompt").forEach((form) => form.onsubmit = (ev) => {
+    ev.preventDefault();
+    account_prompt(form);
+  });
+  el.querySelectorAll(".retry").forEach((retry) => retry.onclick = () => account());
   const kill = $("#account .kill");
   const del = $("#account .del");
   const name = kill.querySelector("input");
@@ -2328,6 +2341,17 @@ async function account() {
 async function signout() {
   await post("/api/logout", {});
   location.href = "/";
+}
+async function account_prompt(form) {
+  const area = form.querySelector("textarea");
+  const why = form.querySelector(".why");
+  const save = form.querySelector("button");
+  const sent = area.value;
+  save.disabled = true;
+  const out = await post("/api/soul", { [area.name]: sent });
+  save.disabled = false;
+  why.textContent = out.error ?? (area.value === sent ? "Saved." : "Not saved yet: Save again.");
+  form.classList.toggle("bad", out.error !== undefined);
 }
 async function account_delete(kill) {
   const name = kill.querySelector("input").value;

@@ -180,6 +180,9 @@ export type Topup   = { id: number; at: string; credits_cents: number; paid_cent
 export type Spend   = { at: number; kind: string; micros: number };
 export type Account = { name: string; bills: boolean; credits: number | null; topups?: Topup[]; calls?: Spend[] };
 
+// what /api/soul gives: the user's SOUL.md; the base prompt, to an owner
+export type Soul    = { soul: string; base?: string };
+
 // a day's use: its date (day_show), what its calls served, counted
 // ("3 replies, 9 summaries"), and their cost
 export type Day = { date: string; what: string; usd: number };

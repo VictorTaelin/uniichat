@@ -40,11 +40,11 @@ import { Cloud, type Account, type User } from "./Cloud.ts";
 import { Disk } from "./Disk.ts";
 import { Mail } from "./Mail.ts";
 import * as Import from "./Import.ts";
-import { JOBS, Memory, type Given, type Msg as Log, type Share } from "./Memory.ts";
+import { JOBS, Memory, SOUL, type Given, type Msg as Log, type Share } from "./Memory.ts";
 import { OpenAI, TRANSCRIBER } from "./OpenAI.ts";
 import { Pick } from "./Pick.ts";
 import { Price } from "./Price.ts";
-import { MASTER, SEARCHES, Tools, type Agent, type Live, type Moved as Kit } from "./Tools.ts";
+import { BASE, MASTER, SEARCHES, SOUL_DEFAULT, Tools, type Agent, type Live, type Moved as Kit } from "./Tools.ts";
 import { email_ask, FRAME, IMAGES, live_push, MOVE, PING, QUIT, SUMMARIES, TICK, TURN, WIRE, type Answer, type Part, type Server as Out, type Wait } from "./View.ts";
 import * as config from "./Config.ts";
 import hello_md from "./hello.md" with { type: "text" };
@@ -336,7 +336,7 @@ export namespace Chat {
   // prompt. A summary gets no tools: one it called, ours or the API's
   // own (web search brings code execution), sent its whole input again
   export function share(chat: Chat): Share {
-    const system = Tools.system(MASTER);
+    const system = Tools.system(Tools.soul(chat.mem.dir) + "\n\n" + Tools.master());
     return { ...Pick.ask(chat.pick), system, searches: 0, server: "" };
   }
 
@@ -1523,10 +1523,48 @@ export namespace Main {
       case "/api/imported": {
         return Response.json(Chat.done(chat));
       }
+      case "/api/soul": {
+        return await Main.soul(chat, user, req);
+      }
     }
     const file = Memory.image_file(mem, p.slice("/image/".length));
     const keep = { "cache-control": "private, max-age=31536000, immutable" };
     return file === null ? new Response("not found", { status: 404 }) : new Response(Bun.file(file), { headers: keep });
+  }
+
+  // the user's SOUL.md, and for an owner (config.OWNERS) the base prompt
+  // (MASTER, unless replaced): a GET reads them, a POST sets the one its
+  // JSON names ({ soul }, at most 16 KB, or { base }, 64 KB), trimmed;
+  // empty deletes the file, going back to SOUL_DEFAULT (or MASTER)
+  export async function soul(chat: Chat, user: User, req: Request): Promise<Response> {
+    const owner = config.OWNERS.includes(user.name.toLowerCase());
+    const read = () => ({ soul: Tools.soul(chat.mem.dir), ...(owner ? { base: Tools.master() } : {}) });
+    if (req.method !== "POST") {
+      return Response.json(read());
+    }
+    if (!Main.spend(USERS, user.id)) {
+      return Response.json({ error: "Too many requests: wait a moment." }, { status: 429 });
+    }
+    const msg = await req.json().catch(() => null);
+    const soul = typeof msg?.soul === "string";
+    if (!soul && typeof msg?.base !== "string") {
+      return Response.json({ error: "Send { soul } or { base }, a text." }, { status: 400 });
+    }
+    if (!soul && !owner) {
+      return Response.json({ error: "Only the server's owner may replace the base prompt." }, { status: 403 });
+    }
+    const text: string = (soul ? msg.soul : msg.base).trim();
+    const most = (soul ? 16 : 64) * 1024;
+    if (Buffer.byteLength(text) > most) {
+      return Response.json({ error: (soul ? "SOUL.md" : "The base prompt") + " holds at most " + most / 1024 + " KB." }, { status: 413 });
+    }
+    const file = soul ? chat.mem.dir + SOUL : BASE;
+    if (text === "" || text === (soul ? SOUL_DEFAULT : MASTER)) {
+      fs.rmSync(file, { force: true });
+    } else {
+      fs.writeFileSync(file, text + "\n");
+    }
+    return Response.json(read());
   }
 
   // a request; one for a chat this process gave away goes there. Another

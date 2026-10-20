@@ -86,3 +86,61 @@ test("a turn's wait names the model it runs on, not one picked since", async () 
   expect(out.picked).toBe(out.to);
   expect(out.after).toBe(out.model);
 });
+
+// a user's SOUL.md joins only their chat's prompts (subagents' too);
+// only the owner replaces the base prompt, for all. Its own process,
+// as config is read once a process
+const SOUL = `
+const { Chat, Main } = await import(${JSON.stringify(import.meta.dir + "/Server.ts")});
+const { Cloud } = await import(${JSON.stringify(import.meta.dir + "/Cloud.ts")});
+const { MASTER, SOUL_DEFAULT, Tools } = await import(${JSON.stringify(import.meta.dir + "/Tools.ts")});
+const { Memory } = await import(${JSON.stringify(import.meta.dir + "/Memory.ts")});
+Chat.cloud = Cloud.open(() => {}, () => {}, async () => null);
+const boss = { id: "u1", name: "Boss@b.c" };
+const sam = { id: "u2", name: "sam@b.c" };
+const [a, b] = [Chat.open(boss), Chat.open(sam)];
+const post = async (chat, user, body) => (await Main.soul(chat, user, new Request("http://x/api/soul", { method: "POST", body: typeof body === "string" ? body : JSON.stringify(body) }))).status;
+const system = (chat) => Chat.share(chat).system;
+const out = {};
+// none: SOUL_DEFAULT first, as the built-in prompt began before; none for agents
+out.plain = system(b) === SOUL_DEFAULT + "\\n\\n" + MASTER + "\\n\\n" + "rules here\\n";
+out.subplain = Tools.system("SUB", b.mem.dir) === "SUB\\n\\nrules here\\n";
+out.set = await post(b, sam, { soul: "Call yourself Kit." });
+out.sams = system(b);
+out.boss = system(a);
+out.sub = Tools.system("SUB", b.mem.dir);
+out.exported = JSON.parse([...Memory.dump(b.mem, {})].join("")).soul;
+out.big = await post(b, sam, { soul: "x".repeat(16 * 1024 + 1) });
+out.junk = await post(b, sam, "not json");
+out.kept = system(b);
+out.denied = await post(b, sam, { base: "You are Bob." });
+out.deniedboss = system(a);
+out.base = await post(a, boss, { base: "You are Bob." });
+out.sambase = system(b);
+out.cleared = await post(b, sam, { soul: "" });
+console.log(JSON.stringify(out));
+process.exit(0);
+`;
+
+test("SOUL.md joins a user's prompts; only the owner replaces the base prompt", async () => {
+  const dir = fs.mkdtempSync(os.tmpdir() + "/unii-server-");
+  fs.writeFileSync(dir + "/soul.ts", SOUL);
+  fs.writeFileSync(dir + "/rules.md", "rules here\n");
+  const env = { ...process.env, UNII_DIR: dir, UNII_OWNER: "boss@b.c", UNII_RULES: dir + "/rules.md" };
+  const proc = Bun.spawn([process.execPath, dir + "/soul.ts"], { env, stdout: "pipe", stderr: "inherit" });
+  const out = JSON.parse((await new Response(proc.stdout).text()).trim().split("\n").at(-1) ?? "{}");
+  expect([out.plain, out.subplain]).toEqual([true, true]);
+  expect(out.set).toBe(200);
+  expect(out.sams).toContain("Call yourself Kit.");
+  expect(out.boss).not.toContain("Kit");
+  expect(out.sub).toContain("Call yourself Kit.");
+  expect(out.exported).toBe("Call yourself Kit.");
+  expect([out.big, out.junk]).toEqual([413, 400]);
+  expect(out.kept).toContain("Call yourself Kit.");
+  expect(out.denied).toBe(403);
+  expect(out.deniedboss).not.toContain("Bob");
+  expect(out.base).toBe(200);
+  expect(out.sambase).toStartWith("Call yourself Kit.\n\nYou are Bob.");
+  expect(out.cleared).toBe(200);
+  expect(fs.existsSync(dir + "/users/u2/SOUL.md")).toBe(false);
+});

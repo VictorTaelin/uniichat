@@ -27,6 +27,11 @@ export const OFFER: Offer = {
 
 export const WORK       = config_path(config_get("work", DIR + "/work"));
 export const RULES      = config_path(config_get("rules", ""));
+
+// the server's owners, by account name (an email, or @login), who may
+// replace the base prompt from the account page (Tools.master); none: no one
+export const OWNERS     = config_get("owner", "").split(",").map((o) => o.trim().toLowerCase()).filter((o) => o !== "");
+
 export const AFTER      = config_get("after", "");
 export const PICK       = config_run("pick", config_get("pick", "claude-api:sonnet-5.5:medium:slow"));
 

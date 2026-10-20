@@ -87,7 +87,12 @@ also be set as the variable `UNII_<KEY>`:
 - `agents`: what subagents run on (default: the chat's pick).
 - `work`: the agents' working dirs on each device (default
   ~/.unii/work).
-- `rules`: a file appended to every system prompt.
+- `rules`: a file appended to every system prompt. Each user's SOUL.md
+  (set on the account page; until then "You are Unii, an AI agent...")
+  starts Unii's prompt; one they wrote ends their agents' too.
+- `owner`: the accounts (emails or @logins, comma-separated) that may
+  replace Unii's base prompt, for every user, on the account page.
+  Compactions use it too: keep the built-in compaction rules in it.
 - `after`: a shell command run after each turn.
 - `workers`: how many processes serve the users (default none: one
   process). With a number, `Server.ts` only routes, behind a proxy that

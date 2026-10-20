@@ -173,6 +173,11 @@ const IMAGES = "/docs/images/";
 
 const AGENTS = "/docs/agent/";
 
+// the user's own instructions (name, persona, tone), first in the
+// master's prompt and after the rules in its agents' (Tools.system), set
+// on the account page (Server.ts)
+export const SOUL = "/SOUL.md";
+
 // a compaction's task, before its <input>: one message to compress
 // (level 0), or two lines to merge
 const LEAF = `Compaction: compress message {id} into one line of at most ${NODE} bytes
@@ -356,6 +361,11 @@ export namespace Memory {
       fs.appendFileSync(file, "\n");
     }
     return data.split("\n").flatMap((line) => Memory.parse(line, file) ?? []);
+  }
+
+  // a file's text, trimmed; none: ""
+  export function file_text(file: string): string {
+    return fs.existsSync(file) ? fs.readFileSync(file, "utf8").trim() : "";
   }
 
   // null: not JSON
@@ -1068,12 +1078,12 @@ ${Memory.cut(line)}| ← LIMIT`;
     }
   }
 
-  // /export: the account, the messages, the summaries, the agents' logs,
-  // then every image, each its base64, read a PIECE at a time
+  // /export: the account, its SOUL.md, the messages, the summaries, the
+  // agents' logs, then every image, each its base64, read a PIECE at a time
   export function* dump(mem: Memory, account: object): Generator<string> {
     const ls = (sub: string) => (fs.existsSync(mem.dir + sub) ? fs.readdirSync(mem.dir + sub).sort() : []);
     let sep = "\n";
-    yield '{"account": ' + JSON.stringify(account) + ',\n"messages": [';
+    yield '{"account": ' + JSON.stringify(account) + ',\n"soul": ' + JSON.stringify(Memory.file_text(mem.dir + SOUL)) + ',\n"messages": [';
     for (let i = 0; i < mem.count; i++) {
       const { kind, text, date, images, more } = Memory.message(mem, i)!;
       yield (i === 0 ? "\n" : ",\n") + JSON.stringify({ id: i, kind, text, date, images, more });

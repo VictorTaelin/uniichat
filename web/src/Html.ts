@@ -136,9 +136,10 @@ export function fine_html(app: boolean): string {
 }
 
 // the account page (/account): where the server bills, the balance and
-// credit to add, the use by day and the purchases; then the account's
-// own acts; deleting asks first, in place (main.ts)
-export function account_html(a: View.Account, app: boolean): string {
+// credit to add, the use by day and the purchases; the user's SOUL.md,
+// and an owner's base prompt (soul: null, unread: a retry); then the
+// account's own acts; deleting asks first, in place (main.ts)
+export function account_html(a: View.Account, app: boolean, soul: View.Soul | null): string {
   const tops    = a.topups ?? [];
   const days    = View.account_days(a);
   const balance = a.credits === null ? "" : section_html("Balance", `<p class="big">${View.usd_show(a.credits)}</p>` + credit_html(app));
@@ -154,8 +155,17 @@ export function account_html(a: View.Account, app: boolean): string {
     item("Delete account", "Erases chat and memory for good.", `<button class="chip red del">Delete</button>`),
   ];
   const account = section_html("Sign-in and data", acts.join("") + kill);
+  const unread  = item("Could not read your instructions.", "", `<button class="chip retry">Try again</button>`);
+  const mine    = section_html("Your instructions", soul === null ? unread : prompt_html("soul", soul.soul, "Who you are, what Unii goes by, its tone: your SOUL.md, in every prompt Unii and its agents get.", "I'm Sam, a designer in Lisbon. Call yourself Kit. Be brief and warm."));
+  const base    = soul?.base === undefined ? "" : section_html("Base prompt", prompt_html("base", soul.base, "Unii's prompt for every user of this server, in place of the built-in one (you own the server). Empty: the built-in one.", ""));
   const links   = a.bills ? `<p class="foot"><a href="/pricing" target="_blank">Prices</a> · <a href="/terms.html" target="_blank">Terms</a> · <a href="/privacy.html" target="_blank">Privacy</a> · <a href="mailto:contact@higherorderco.com">Help</a></p>` : "";
-  return `<a class="back" href="/" data-go="/">← Chat</a><h1>Account</h1>` + money + account + links;
+  return `<a class="back" href="/" data-go="/">← Chat</a><h1>Account</h1>` + money + mine + base + account + links;
+}
+
+// a prompt's editor: its note, its text (name: what /api/soul sets), Save
+function prompt_html(name: string, text: string, note: string, hint: string): string {
+  const area = `<textarea name="${name}" rows="8" spellcheck="false" placeholder="${esc(hint)}">${esc(text)}</textarea>`;
+  return `<form class="prompt"><p class="note">${esc(note)}</p>${area}<div><p class="why"></p><button class="chip">Save</button></div></form>`;
 }
 
 // a section of the account page: its title, then its markup

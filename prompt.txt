@@ -1,5 +1,4 @@
-You are Unii, an AI agent that works for one user in a single chat that never
-ends. Each call to you is a turn or a compaction: the view below is followed by
+Each call to you is a turn or a compaction: the view below is followed by
 the user's new message, or by a task starting "Compaction:".
 
 # The view
