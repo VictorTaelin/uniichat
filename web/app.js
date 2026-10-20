@@ -523,8 +523,7 @@ var SPAN = new RegExp([
   /(?<![*\w])\*([^*\s][^*\n]*?)\*(?![\w*])/.source,
   /(?<![^\s(])(https?:\/\/[^\s<)]+[^\s<).,;:!?])/.source
 ].join("|"), "g");
-var LIST = /^\s*([-*+]|\d+[.)])\s+/;
-var MORE = /^\s{2,}\S/;
+var LIST = /^ {0,3}([-*+]|\d{1,9}[.)])(?=[ \t]|$)/;
 var FENCE = /^\s*```/;
 var HEAD = /^(#{1,6})\s+(.*)$/;
 var RULE = /^\s*([-*_])(\s*\1){2,}\s*$/;
@@ -534,6 +533,8 @@ var BAR = /^\s*\|?[\s:|-]*-[\s:|-]*\|?\s*$/;
 var NEW = /^\+\+\+ (.*)$/;
 var READ = /^\[(lines (\d+)-\d+ of \d+[^\]]*)\]$/;
 var HUNK = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
+var MARKS = /^(?:\s*(?:[-*+]|\d{1,9}[.)])(?:[ \t]+|$)|\s*>\s?)*/;
+var DEEP = 16;
 function Text(x) {
   return { $: "Text", x };
 }
@@ -653,23 +654,27 @@ function hunk_parse(lines, j, h) {
   return [out, j];
 }
 function md_parse(src) {
-  const lines = src.replace(/\r/g, "").split(`
-`);
+  return blocks_parse(src.replace(/\r/g, "").split(`
+`), 0)[0];
+}
+function blocks_parse(lines, d) {
   const out = [];
-  let i = 0;
+  let [i, gap, apart] = [0, false, false];
   while (i < lines.length) {
-    const [block, next] = block_parse(lines, i);
-    if (block !== null) {
+    const [block, next] = block_parse(lines, i, d);
+    if (block === null) {
+      gap = out.length > 0;
+    } else {
+      [apart, gap] = [apart || gap, false];
       out.push(block);
     }
     i = next;
   }
-  return out;
+  return [out, apart];
 }
-function block_parse(lines, i) {
+function block_parse(lines, i, d) {
   const line = lines[i];
   const head = HEAD.exec(line);
-  const numbered = list_numbered(line);
   const runs = (test) => lines_run(lines, i, test);
   if (line.trim() === "") {
     return [null, i + 1];
@@ -691,21 +696,10 @@ function block_parse(lines, i) {
   if (QUOT.test(line)) {
     const end2 = runs((l) => QUOT.test(l));
     const body = lines.slice(i, end2).map((l) => l.replace(QUOT, ""));
-    return [{ $: "Quot", x: md_parse(body.join(`
-`)) }, end2];
+    return [{ $: "Quot", x: blocks_parse(body, d + 1)[0] }, end2];
   }
-  if (numbered !== null) {
-    const item = (l) => list_numbered(l) === numbered;
-    const end2 = runs((l) => item(l) || MORE.test(l));
-    const items = [];
-    for (const l of lines.slice(i, end2)) {
-      if (item(l)) {
-        items.push(l.replace(LIST, ""));
-      } else {
-        items[items.length - 1] += " " + l.trim();
-      }
-    }
-    return [{ $: "List", k: numbered, x: items.map(span_parse) }, end2];
+  if (list_kind(line) !== null && d < DEEP) {
+    return list_parse(lines, i, d);
   }
   if (ROW.test(line) && BAR.test(lines[i + 1] ?? "")) {
     const end2 = lines_run(lines, i + 1, (l) => ROW.test(l));
@@ -716,6 +710,58 @@ function block_parse(lines, i) {
   const x = lines.slice(i, end).map(span_parse);
   return [{ $: "Para", x }, end];
 }
+function list_parse(lines, i, d) {
+  const kind = list_kind(lines[i]);
+  const items = [];
+  let [end, w, blank, open2, para, fenced, loose] = [i, 0, 0, true, false, false, false];
+  for (let j = i;j < lines.length; j++) {
+    const l = untab(lines[j]);
+    const at = indent(l);
+    if (at === l.length) {
+      [blank, para] = [blank + 1, false];
+      continue;
+    }
+    if (list_kind(l) === kind && (items.length === 0 || at < w)) {
+      const mark = LIST.exec(l)[0];
+      const rest = l.slice(mark.length);
+      const pad = indent(rest);
+      w = mark.length + (rest.trim() === "" || pad > 4 ? 1 : pad);
+      open2 = rest.trim() !== "" || (lines[j + 1] ?? "").trim() !== "";
+      loose = loose || blank > 0 && items.length > 0;
+      items.push([l.slice(w)]);
+      [para, fenced] = item_line(l.slice(w), false);
+    } else if (open2 && at >= w) {
+      for (;blank > 0; blank--) {
+        items[items.length - 1].push("");
+      }
+      items[items.length - 1].push(l.slice(w));
+      [para, fenced] = item_line(l.slice(w), fenced);
+    } else if (open2 && para && blank === 0 && !LIST.test(l) && !block_starts(lines, j)) {
+      items[items.length - 1].push(l.trimStart());
+    } else {
+      break;
+    }
+    [blank, end] = [0, j + 1];
+  }
+  const first = LIST.exec(lines[i])[1];
+  const k = /\d/.test(first);
+  const parts = items.map((x) => blocks_parse(x, d + 1));
+  const t = !loose && !parts.some((p) => p[1]);
+  return [{ $: "List", k, n: k ? Number(first.slice(0, -1)) : 1, t, x: parts.map((p) => p[0]) }, end];
+}
+function item_line(s, fenced) {
+  const x = RULE.test(s) ? "" : s.replace(MARKS, "");
+  if (FENCE.test(x)) {
+    return [false, !fenced];
+  }
+  return [!fenced && x.trim() !== "" && !HEAD.test(x) && !RULE.test(x) && !ROW.test(x), fenced];
+}
+function untab(l) {
+  return l.replace(/^[ \t]*(?:(?:[-*+]|\d{1,9}[.)])[ \t]+)*/, (pre) => [...pre].reduce((out, c) => out + (c === "\t" ? " ".repeat(4 - out.length % 4) : c), ""));
+}
+function indent(l) {
+  return l.search(/\S|$/);
+}
 function lines_run(lines, i, test) {
   let j = i + 1;
   while (j < lines.length && test(lines[j], j)) {
@@ -725,11 +771,13 @@ function lines_run(lines, i, test) {
 }
 function block_starts(lines, j) {
   const l = lines[j];
-  return FENCE.test(l) || HEAD.test(l) || RULE.test(l) || QUOT.test(l) || LIST.test(l) || ROW.test(l) && BAR.test(lines[j + 1] ?? "");
-}
-function list_numbered(l) {
   const m = LIST.exec(l);
-  return m === null ? null : /\d/.test(m[1]);
+  const item = m !== null && l.slice(m[0].length).trim() !== "" && (!/\d/.test(m[1]) || Number(m[1].slice(0, -1)) === 1);
+  return FENCE.test(l) || HEAD.test(l) || RULE.test(l) || QUOT.test(l) || item || ROW.test(l) && BAR.test(lines[j + 1] ?? "");
+}
+function list_kind(l) {
+  const m = LIST.exec(l);
+  return m === null || RULE.test(l) ? null : m[1].slice(-1);
 }
 function row_cells(line) {
   const cells = line.trim().replace(/^\||(?<!\\)\|$/g, "").split(/(?<!\\)\|/);
@@ -1380,7 +1428,7 @@ var ESC = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" };
 var TALL = 4000;
 var SHEETS = `<svg viewBox="0 0 16 16" width="15" height="15"><rect x="5.5" y="5.5" width="8" height="8" rx="1.8"/><path d="M10.5 3.5v-.2A1.8 1.8 0 0 0 8.7 1.5H4.3A1.8 1.8 0 0 0 2.5 3.3v4.4a1.8 1.8 0 0 0 1.8 1.8h.2"/></svg>`;
 var CHECK = `<svg viewBox="0 0 16 16" width="15" height="15"><path d="M3 8.5l3.2 3L13 4.5"/></svg>`;
-var MARKS = { " ": "", "-": "del", "+": "add" };
+var MARKS2 = { " ": "", "-": "del", "+": "add" };
 function esc(s) {
   return s.replace(/[&<>"]/g, (c) => ESC[c]);
 }
@@ -1508,8 +1556,9 @@ function block_html(b) {
     }
     case "List": {
       const tag = b.k ? "ol" : "ul";
-      const items = b.x.map((item) => `<li>${spans_html(item)}</li>`);
-      return `<${tag}>${items.join("")}</${tag}>`;
+      const start = b.k && b.n !== 1 ? ` start="${b.n}"` : "";
+      const items = b.x.map((item) => `<li>${item_html(item, b.t)}</li>`);
+      return `<${tag}${start}>${items.join("")}</${tag}>`;
     }
     case "Tabl": {
       const rows = b.x.map((row, i) => {
@@ -1527,13 +1576,16 @@ function block_html(b) {
     }
   }
 }
+function item_html(blocks, tight) {
+  return blocks.map((b) => tight && b.$ === "Para" ? b.x.map(spans_html).join("<br>") : block_html(b)).join("");
+}
 function diff_html(file, hunks) {
   const all = hunks.flat();
   const nw = all.reduce((w, l) => Math.max(w, String(l.n).length), 0);
   const adds = all.filter((l) => l.s === "+").length;
   const dels = all.filter((l) => l.s === "-").length;
   const head = `<span class="lang">${esc(file)} <b class="add">+${adds}</b> <b class="del">-${dels}</b></span>`;
-  const line = (l) => `<span class="${MARKS[l.s]}"><i>${l.n}</i>${l.s} ${esc(l.x)}</span>`;
+  const line = (l) => `<span class="${MARKS2[l.s]}"><i>${l.n}</i>${l.s} ${esc(l.x)}</span>`;
   const lines = hunks.map((h) => h.map(line).join("")).join(`<span class="gap">⋯</span>`);
   return `<pre class="diff" style="--nw:${nw}ch">${head}<code>${lines}</code></pre>`;
 }

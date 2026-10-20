@@ -38,7 +38,7 @@ export type Block =
   | Code
   | { $: "Rule" }                          // ---
   | { $: "Quot"; x: Block[] }              // > x
-  | { $: "List"; k: boolean; x: Span[][] } // - x (k: numbered, 1. x)
+  | { $: "List"; k: boolean; n: number; t: boolean; x: Block[][] } // - x (k: numbered, 1. x, from n; t: tight; each item its blocks)
   | { $: "Tabl"; x: Span[][][] }           // | x | (rows of cells; 1st: head)
   | { $: "Diff"; k: string; x: Line[][] }  // --- k, +++ k, then hunks (@@ -1,2 +1,3 @@)
   | { $: "File"; k: string; n: number; x: string[] } // a file's lines x, from line n, named k (a read's "lines 4-7 of 15", else "result")
@@ -55,8 +55,7 @@ const SPAN  = new RegExp([
   /(?<![*\w])\*([^*\s][^*\n]*?)\*(?![\w*])/.source,
   /(?<![^\s(])(https?:\/\/[^\s<)]+[^\s<).,;:!?])/.source,
 ].join("|"), "g");
-const LIST  = /^\s*([-*+]|\d+[.)])\s+/;
-const MORE  = /^\s{2,}\S/;
+const LIST  = /^ {0,3}([-*+]|\d{1,9}[.)])(?=[ \t]|$)/;
 const FENCE = /^\s*```/;
 const HEAD  = /^(#{1,6})\s+(.*)$/;
 const RULE  = /^\s*([-*_])(\s*\1){2,}\s*$/;
@@ -66,6 +65,11 @@ const BAR   = /^\s*\|?[\s:|-]*-[\s:|-]*\|?\s*$/;
 const NEW   = /^\+\+\+ (.*)$/;
 const READ  = /^\[(lines (\d+)-\d+ of \d+[^\]]*)\]$/;
 const HUNK  = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
+const MARKS = /^(?:\s*(?:[-*+]|\d{1,9}[.)])(?:[ \t]+|$)|\s*>\s?)*/;
+
+// how many lists and quotes deep a list is still read (past it, its
+// lines are text: a list in a list costs every line under it a copy)
+const DEEP  = 16;
 
 // Constructors
 // ============
@@ -211,24 +215,31 @@ function hunk_parse(lines: string[], j: number, h: RegExpExecArray): [Line[] | n
 }
 
 export function md_parse(src: string): Block[] {
-  const lines = src.replace(/\r/g, "").split("\n");
+  return blocks_parse(src.replace(/\r/g, "").split("\n"), 0)[0];
+}
+
+// the blocks of lines d lists or quotes deep, and whether a blank line
+// parts two of them (a list item's: a loose list)
+function blocks_parse(lines: string[], d: number): [Block[], boolean] {
   const out: Block[] = [];
-  let i = 0;
+  let [i, gap, apart] = [0, false, false];
   while (i < lines.length) {
-    const [block, next] = block_parse(lines, i);
-    if (block !== null) {
+    const [block, next] = block_parse(lines, i, d);
+    if (block === null) {
+      gap = out.length > 0;
+    } else {
+      [apart, gap] = [apart || gap, false];
       out.push(block);
     }
     i = next;
   }
-  return out;
+  return [out, apart];
 }
 
 // null: a blank line; and the line after the block
-function block_parse(lines: string[], i: number): [Block | null, number] {
+function block_parse(lines: string[], i: number, d: number): [Block | null, number] {
   const line = lines[i];
   const head = HEAD.exec(line);
-  const numbered = list_numbered(line);
   const runs = (test: (l: string, j: number) => boolean) => lines_run(lines, i, test);
   if (line.trim() === "") {
     return [null, i + 1];
@@ -249,20 +260,10 @@ function block_parse(lines: string[], i: number): [Block | null, number] {
   if (QUOT.test(line)) {
     const end = runs((l) => QUOT.test(l));
     const body = lines.slice(i, end).map((l) => l.replace(QUOT, ""));
-    return [{ $: "Quot", x: md_parse(body.join("\n")) }, end];
+    return [{ $: "Quot", x: blocks_parse(body, d + 1)[0] }, end];
   }
-  if (numbered !== null) {
-    const item = (l: string) => list_numbered(l) === numbered;
-    const end = runs((l) => item(l) || MORE.test(l));
-    const items: string[] = [];
-    for (const l of lines.slice(i, end)) {
-      if (item(l)) {
-        items.push(l.replace(LIST, ""));
-      } else {
-        items[items.length - 1] += " " + l.trim();
-      }
-    }
-    return [{ $: "List", k: numbered, x: items.map(span_parse) }, end];
+  if (list_kind(line) !== null && d < DEEP) {
+    return list_parse(lines, i, d);
   }
   if (ROW.test(line) && BAR.test(lines[i + 1] ?? "")) {
     const end = lines_run(lines, i + 1, (l) => ROW.test(l));
@@ -272,6 +273,73 @@ function block_parse(lines: string[], i: number): [Block | null, number] {
   const end = runs((l, j) => l.trim() !== "" && !block_starts(lines, j));
   const x = lines.slice(i, end).map(span_parse);
   return [{ $: "Para", x }, end];
+}
+
+// a list: its items, of one kind (one bullet, or one number's end).
+// An item runs on over the lines as far in as its text (its paragraphs,
+// its sub-lists), blank lines between them too, and over the lines
+// right under its paragraph that start no block. It is tight but a
+// blank line parts two items or two of an item's blocks. Numbered, it
+// counts from its first item's number (GFM's list items and lists)
+function list_parse(lines: string[], i: number, d: number): [Block, number] {
+  const kind  = list_kind(lines[i]);
+  const items : string[][] = [];
+  let [end, w, blank, open, para, fenced, loose] = [i, 0, 0, true, false, false, false];
+  for (let j = i; j < lines.length; j++) {
+    const l  = untab(lines[j]);
+    const at = indent(l);
+    if (at === l.length) {
+      [blank, para] = [blank + 1, false];
+      continue;
+    }
+    if (list_kind(l) === kind && (items.length === 0 || at < w)) {
+      const mark = LIST.exec(l)![0];
+      const rest = l.slice(mark.length);
+      const pad  = indent(rest);
+      w     = mark.length + (rest.trim() === "" || pad > 4 ? 1 : pad);
+      open  = rest.trim() !== "" || (lines[j + 1] ?? "").trim() !== "";
+      loose = loose || (blank > 0 && items.length > 0);
+      items.push([l.slice(w)]);
+      [para, fenced] = item_line(l.slice(w), false);
+    } else if (open && at >= w) {
+      for (; blank > 0; blank--) {
+        items[items.length - 1].push("");
+      }
+      items[items.length - 1].push(l.slice(w));
+      [para, fenced] = item_line(l.slice(w), fenced);
+    } else if (open && para && blank === 0 && !LIST.test(l) && !block_starts(lines, j)) {
+      items[items.length - 1].push(l.trimStart());
+    } else {
+      break;
+    }
+    [blank, end] = [0, j + 1];
+  }
+  const first = LIST.exec(lines[i])![1];
+  const k     = /\d/.test(first);
+  const parts = items.map((x) => blocks_parse(x, d + 1));
+  const t     = !loose && !parts.some((p) => p[1]);
+  return [{ $: "List", k, n: k ? Number(first.slice(0, -1)) : 1, t, x: parts.map((p) => p[0]) }, end];
+}
+
+// an item's line s: whether a paragraph is open after it (a line under
+// it can go on with it), and whether a fence is (fenced: before it)
+function item_line(s: string, fenced: boolean): [boolean, boolean] {
+  const x = RULE.test(s) ? "" : s.replace(MARKS, "");
+  if (FENCE.test(x)) {
+    return [false, !fenced];
+  }
+  return [!fenced && x.trim() !== "" && !HEAD.test(x) && !RULE.test(x) && !ROW.test(x), fenced];
+}
+
+// a line, the tabs in its indent and after its list marks as spaces, to
+// the next 4th column
+function untab(l: string): string {
+  return l.replace(/^[ \t]*(?:(?:[-*+]|\d{1,9}[.)])[ \t]+)*/, (pre) => [...pre].reduce((out, c) => out + (c === "\t" ? " ".repeat(4 - (out.length % 4)) : c), ""));
+}
+
+// a line's leading blanks
+function indent(l: string): number {
+  return l.search(/\S|$/);
 }
 
 function lines_run(lines: string[], i: number, test: (l: string, j: number) => boolean): number {
@@ -284,17 +352,19 @@ function lines_run(lines: string[], i: number, test: (l: string, j: number) => b
 
 // whether line j starts a block block_parse reads, but a paragraph: one
 // ends a paragraph, a rule too ("---" right under a line), a table only
-// with its bar under it
+// with its bar under it, a list item only with text, numbered only at 1
 function block_starts(lines: string[], j: number): boolean {
   const l = lines[j];
-  return FENCE.test(l) || HEAD.test(l) || RULE.test(l) || QUOT.test(l) || LIST.test(l) || (ROW.test(l) && BAR.test(lines[j + 1] ?? ""));
+  const m = LIST.exec(l);
+  const item = m !== null && l.slice(m[0].length).trim() !== "" && (!/\d/.test(m[1]) || Number(m[1].slice(0, -1)) === 1);
+  return FENCE.test(l) || HEAD.test(l) || RULE.test(l) || QUOT.test(l) || item || (ROW.test(l) && BAR.test(lines[j + 1] ?? ""));
 }
 
-// whether a list item is numbered (1. x) or not (- x); null: no item. A
-// list is of one kind: "1." after "- " items starts another
-function list_numbered(l: string): boolean | null {
+// a list item's kind: its bullet (-, *, +) or its number's end (., ));
+// null: no item (a rule, as "- - -", is none). A list is of one kind
+function list_kind(l: string): string | null {
   const m = LIST.exec(l);
-  return m === null ? null : /\d/.test(m[1]);
+  return m === null || RULE.test(l) ? null : m[1].slice(-1);
 }
 
 // a table row's cells, split at each | but an escaped one (\|)

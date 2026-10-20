@@ -256,6 +256,7 @@ header > .imping { display: flex; flex-direction: column; justify-content: cente
 .msg > :last-child { margin-bottom: 0; }
 .msg p, .msg ul, .msg ol, .msg pre, .msg blockquote { margin: 0 0 .85em; }
 .msg ul, .msg ol { padding-left: 1.3em; }
+.msg li > :is(ul, ol):last-child { margin-bottom: 0; }
 .msg code { font: .82em var(--mono); background: var(--block); border-radius: 5px; padding: .1em .35em; }
 /* code in a message: filled, as the terminal; a call's code (on the
    call's fill) and a file's lines: framed. Code never wraps on the

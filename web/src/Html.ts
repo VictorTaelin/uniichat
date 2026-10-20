@@ -191,8 +191,9 @@ export function block_html(b: Md.Block): string {
     }
     case "List": {
       const tag = b.k ? "ol" : "ul";
-      const items = b.x.map((item) => `<li>${spans_html(item)}</li>`);
-      return `<${tag}>${items.join("")}</${tag}>`;
+      const start = b.k && b.n !== 1 ? ` start="${b.n}"` : "";
+      const items = b.x.map((item) => `<li>${item_html(item, b.t)}</li>`);
+      return `<${tag}${start}>${items.join("")}</${tag}>`;
     }
     case "Tabl": {
       const rows = b.x.map((row, i) => {
@@ -209,6 +210,12 @@ export function block_html(b: Md.Block): string {
       return file_html(b.k, b.n, b.x);
     }
   }
+}
+
+// a list item's blocks; in a tight list its paragraphs bare (lines, not
+// paragraphs spaced apart)
+function item_html(blocks: Md.Block[], tight: boolean): string {
+  return blocks.map((b) => (tight && b.$ === "Para" ? b.x.map(spans_html).join("<br>") : block_html(b))).join("");
 }
 
 // a diff: its file and its lines added and dropped over its lines, each

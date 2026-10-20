@@ -282,7 +282,8 @@ function block_lines(b: Md.Block, w: number, ink: Ink): Line[] {
       return blocks_lines(b.x, w - 2, { ...ink, d: true }).map((l) => [Run("│ ", DIM), ...l]);
     }
     case "List": {
-      return b.x.flatMap((spans, k) => item_lines(spans, b.k ? k + 1 + ". " : "• ", w, ink));
+      const items = b.x.map((item, k) => item_lines(item, b.k ? b.n + k + ". " : "• ", b.t, w, ink));
+      return b.t ? items.flat() : lines_join(items, (x) => x);
     }
     case "Tabl": {
       return table_lines(b.x, w, ink);
@@ -296,11 +297,12 @@ function block_lines(b: Md.Block, w: number, ink: Ink): Line[] {
   }
 }
 
-// a list's item: its mark, its text hung after it
-function item_lines(spans: Md.Span[], mark: string, w: number, ink: Ink): Line[] {
+// a list's item: its mark, its blocks hung after it; a loose list's a
+// blank line apart, as its items are
+function item_lines(blocks: Md.Block[], mark: string, tight: boolean, w: number, ink: Ink): Line[] {
   const mw   = text_width(mark);
-  const rows = runs_wrap(spans_runs(spans, ink), w - mw, false);
-  return rows.map((l, k) => [Run(k === 0 ? mark : " ".repeat(mw), ink), ...l]);
+  const rows = tight ? blocks.flatMap((b) => block_lines(b, w - mw, ink)) : blocks_lines(blocks, w - mw, ink);
+  return (rows.length === 0 ? [[]] : rows).map((l, k) => [Run(k === 0 ? mark : " ".repeat(mw), ink), ...l]);
 }
 
 // code: its label (a key, a language) over its lines, on a fill (a
