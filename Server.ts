@@ -2122,9 +2122,10 @@ export namespace Main {
       // a pipe, which holds the keys only until the worker reads them
       // (a Blob would stay readable at /proc/<worker>/fd/0)
       const proc = Bun.spawn([...run, String(port + 1 + k)], { env, ipc, stdin: "pipe", stdout: "inherit", stderr: "inherit" });
+      const keys = proc.stdin as Bun.FileSink;
       try {
-        proc.stdin.write(config.config_hand());
-        Promise.resolve(proc.stdin.end()).catch(() => {});
+        keys.write(config.config_hand());
+        Promise.resolve(keys.end()).catch(() => {});
       } catch {}
       all.add(proc);
       proc.exited.then((code) => {
