@@ -249,7 +249,9 @@ function chat(): void {
   visualViewport!.onresize = () => draw(true);
   document.onscroll = () => {
     P.end = innerHeight + scrollY >= document.documentElement.scrollHeight - 1;
+    mine_show();
   };
+  $(".mine").onclick = mine;
   draw(true);
 }
 
@@ -849,7 +851,10 @@ function html_parse(html: string): Element {
 function draw(stick: boolean): void {
   P.stick = P.stick && stick;
   if (P.frame === 0) {
-    P.frame = requestAnimationFrame(paint);
+    P.frame = requestAnimationFrame(() => {
+      paint();
+      mine_show();
+    });
   }
 }
 
@@ -933,6 +938,28 @@ function anchor(): { a: number; top: number } | null {
     }
   }
   return null;
+}
+
+// Mine
+// ====
+// The button at the top goes up to the user's last message out of
+// sight above, and each press after to the one before it: a reply's
+// thinking, tool calls and output can bury the prompt it answers.
+
+function mine(): void {
+  const rows = [...document.querySelectorAll<HTMLElement>("#log .msg.user")];
+  rows.findLast(mine_above)?.scrollIntoView();
+  mine_show();
+}
+
+// shown while one of the user's messages is above the screen
+function mine_show(): void {
+  const first = document.querySelector<HTMLElement>("#log .msg.user");
+  $(".mine").hidden = first === null || !mine_above(first);
+}
+
+function mine_above(el: HTMLElement): boolean {
+  return el.getBoundingClientRect().top < $("header").getBoundingClientRect().bottom;
 }
 
 // Account

@@ -136,6 +136,11 @@ body.account footer > :not(#toast) { display: none; }
 .composer.off textarea { color: var(--soft); }
 .composer.off .send { background: var(--hair); cursor: default; }
 .composer.off :is(.attach, .mic) { visibility: hidden; }
+/* up to the user's message (main.ts mine): the ☰ button's look, smaller,
+   floating under it */
+.mine { position: fixed; top: calc(var(--head) + 6px); right: max(20px, env(safe-area-inset-right)); width: 30px; height: 26px; display: grid; place-items: center; border-radius: 7px; background: var(--block); }
+.mine:hover { background: var(--hover); }
+.mine svg { width: 14px; height: 14px; stroke-width: 2.2; }
 #toast { width: fit-content; max-width: min(560px, 100%); margin: 0 auto 10px; padding: 8px 16px; border-radius: 12px; background: var(--ink); color: var(--paper); font-size: 13.5px; }
 
 #tabs { width: min(var(--col), 100%); margin: 6px auto 0; display: flex; gap: 16px; overflow-x: auto; white-space: nowrap; scrollbar-width: none; font: 13px/20px var(--sans); color: var(--mid); }
@@ -269,6 +274,9 @@ header > .imping { display: flex; flex-direction: column; justify-content: cente
 /* the user's message: a bubble at the right, as wide as its text (the
    terminal, whose column can't fit one, frames it at the left) */
 .msg.user { margin-left: auto; width: fit-content; max-width: min(82%, 560px); padding: 10px 17px; border: 1.25px solid var(--edge); border-radius: 20px 20px 6px 20px; font: 16px/1.55 var(--sans); }
+/* where the button (main.ts mine) puts a message: under the button (and
+   an open block's bar), with room above for its Copy and fold pill */
+.msg.user { scroll-margin-top: calc(var(--head) + 66px); }
 .msg.work { padding: 14px 20px; border: 1.25px solid var(--edge); border-radius: 14px; font: 16px/1.55 var(--sans); }
 /* who said it, on the frame's top (View row.who) */
 .msg.work::before { content: attr(data-who); position: absolute; left: 14px; top: -.75em; padding: 0 6px; background: var(--paper); font: 600 12px/1.5 var(--sans); color: var(--mid); }
@@ -324,7 +332,7 @@ header > .imping { display: flex; flex-direction: column; justify-content: cente
    centered on each, not drawn), links in small print above and below */
 @media (pointer: coarse) {
   :is(header > button, #pick button, #tabs button) { position: relative; }
-  :is(header > button, #pick button, #tabs button, .copy, .open.one > .fold)::after { content: ""; position: absolute; left: 50%; top: 50%; width: max(100%, 44px); height: max(100%, 44px); transform: translate(-50%, -50%); }
+  :is(header > button, #pick button, #tabs button, .mine, .copy, .open.one > .fold)::after { content: ""; position: absolute; left: 50%; top: 50%; width: max(100%, 44px); height: max(100%, 44px); transform: translate(-50%, -50%); }
   :is(.ai, .fine, .foot) a { padding: 14px 0; }
   :is(.chip, .usd button) { height: 44px; }
   [popover] > button { min-height: 44px; }
@@ -341,6 +349,7 @@ header > .imping { display: flex; flex-direction: column; justify-content: cente
 @media (max-width: 600px) {
   :root { --head: 51px; }
   header { padding: 0 14px; }
+  .mine { right: 14px; }
   .brand span { display: none; }
   header > button { height: 30px; padding: 0 10px; font-size: 13px; }
   #log { width: calc(100% - 28px); }

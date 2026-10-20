@@ -675,42 +675,42 @@ function block_parse(lines, i) {
     return [null, i + 1];
   }
   if (FENCE.test(line)) {
-    const end2 = runs((l) => !FENCE.test(l));
+    const end = runs((l) => !FENCE.test(l));
     const k = line.trim().slice(3).trim();
-    const x2 = lines.slice(i + 1, end2).join(`
+    const x = lines.slice(i + 1, end).join(`
 `);
-    return [{ $: "Code", k, x: x2 }, end2 + 1];
+    return [{ $: "Code", k, x }, end + 1];
   }
   if (head !== null) {
-    const x2 = span_parse(head[2]);
-    return [{ $: "Head", k: head[1].length, x: x2 }, i + 1];
+    const x = span_parse(head[2]);
+    return [{ $: "Head", k: head[1].length, x }, i + 1];
   }
   if (RULE.test(line)) {
     return [{ $: "Rule" }, i + 1];
   }
   if (QUOT.test(line)) {
-    const end2 = runs((l) => QUOT.test(l));
-    const body = lines.slice(i, end2).map((l) => l.replace(QUOT, ""));
+    const end = runs((l) => QUOT.test(l));
+    const body = lines.slice(i, end).map((l) => l.replace(QUOT, ""));
     return [{ $: "Quot", x: md_parse(body.join(`
-`)) }, end2];
+`)) }, end];
   }
   if (numbered !== null) {
     const item = (l) => list_numbered(l) === numbered;
-    const end2 = runs((l) => item(l) || MORE.test(l));
+    const end = runs((l) => item(l) || MORE.test(l));
     const items = [];
-    for (const l of lines.slice(i, end2)) {
+    for (const l of lines.slice(i, end)) {
       if (item(l)) {
         items.push(l.replace(LIST, ""));
       } else {
         items[items.length - 1] += " " + l.trim();
       }
     }
-    return [{ $: "List", k: numbered, x: items.map(span_parse) }, end2];
+    return [{ $: "List", k: numbered, x: items.map(span_parse) }, end];
   }
   if (ROW.test(line) && BAR.test(lines[i + 1] ?? "")) {
-    const end2 = lines_run(lines, i + 1, (l) => ROW.test(l));
-    const rows = [line, ...lines.slice(i + 2, end2)];
-    return [{ $: "Tabl", x: rows.map(row_cells) }, end2];
+    const end = lines_run(lines, i + 1, (l) => ROW.test(l));
+    const rows = [line, ...lines.slice(i + 2, end)];
+    return [{ $: "Tabl", x: rows.map(row_cells) }, end];
   }
   const end = runs((l, j) => l.trim() !== "" && !block_starts(lines, j));
   const x = lines.slice(i, end).map(span_parse);
@@ -753,25 +753,25 @@ var EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 var SPEEDS = ["slow", "fast", "ultrafast"];
 var LABELS = [...new Set(Object.values(MODELS).flat().map((m) => m.label))];
 var Pick;
-((Pick) => {
-  function model(vendor, label2) {
-    return MODELS[vendor].find((m) => m.label === label2);
+((Pick2) => {
+  function model(vendor, label) {
+    return MODELS[vendor].find((m) => m.label === label);
   }
-  Pick.model = model;
-  function on(pick, vendor, model2) {
+  Pick2.model = model;
+  function on(pick, vendor, model) {
     const below = SPEEDS.slice(0, SPEEDS.indexOf(pick.speed) + 1);
-    const speed = below.filter((s) => model2.speeds.includes(s)).pop() ?? "slow";
-    return { ...pick, vendor, model: model2.label, speed };
+    const speed = below.filter((s) => model.speeds.includes(s)).pop() ?? "slow";
+    return { ...pick, vendor, model: model.label, speed };
   }
-  Pick.on = on;
+  Pick2.on = on;
   function models(vendors, labels) {
     return vendors.flatMap((v) => MODELS[v].filter((m) => labels.includes(m.label)).map((m) => [v, m]));
   }
-  Pick.models = models;
-  function options(pick, move2, { vendors, models: models2 }) {
+  Pick2.models = models;
+  function options(pick, move, { vendors, models }) {
     const speeds = Pick.model(pick.vendor, pick.model)?.speeds ?? [];
-    const all = (vs) => Pick.models(vs, models2).map(([v, m]) => [m.label, Pick.on(pick, v, m)]);
-    switch (move2) {
+    const all = (vs) => Pick.models(vs, models).map(([v, m]) => [m.label, Pick.on(pick, v, m)]);
+    switch (move) {
       case "next":
       case "prev":
       case "model": {
@@ -787,40 +787,40 @@ var Pick;
       }
     }
   }
-  Pick.options = options;
-  function move(pick, move2, offer, to) {
-    const list = Pick.options(pick, move2, offer);
+  Pick2.options = options;
+  function move(pick, move, offer, to) {
+    const list = Pick.options(pick, move, offer);
     const n = list.length;
     const at = list.findIndex(([, p]) => Pick.label(p) === Pick.label(pick));
-    const d = move2 === "prev" || move2 === "down" ? -1 : 1;
-    const ends = move2 === "up" || move2 === "down";
+    const d = move === "prev" || move === "down" ? -1 : 1;
+    const ends = move === "up" || move === "down";
     const next = ends ? Math.max(0, Math.min(n - 1, at + d)) : (at + d + n) % n;
     const like = list.filter(([part]) => part.toLowerCase().includes(String(to).toLowerCase()));
     const hit = to === undefined ? list[next] : list.find(([part]) => part === to) ?? (like.length === 1 ? like[0] : undefined);
     return hit === undefined ? null : hit[1];
   }
-  Pick.move = move;
+  Pick2.move = move;
   function label(pick) {
     return [pick.vendor, pick.model, pick.effort, pick.speed].join(":");
   }
-  Pick.label = label;
+  Pick2.label = label;
   function ask(pick) {
-    const model2 = Pick.model(pick.vendor, pick.model);
-    return { ...pick, model: model2?.id ?? pick.model };
+    const model = Pick.model(pick.vendor, pick.model);
+    return { ...pick, model: model?.id ?? pick.model };
   }
-  Pick.ask = ask;
+  Pick2.ask = ask;
   function read(x, offer) {
-    const model2 = offer.vendors.includes(x.vendor) && offer.models.includes(x.model) ? Pick.model(x.vendor, x.model) : undefined;
-    if (model2 === undefined || !EFFORTS.includes(x.effort) || !model2.speeds.includes(x.speed)) {
+    const model = offer.vendors.includes(x.vendor) && offer.models.includes(x.model) ? Pick.model(x.vendor, x.model) : undefined;
+    if (model === undefined || !EFFORTS.includes(x.effort) || !model.speeds.includes(x.speed)) {
       return null;
     }
     return { vendor: x.vendor, model: x.model, effort: x.effort, speed: x.speed };
   }
-  Pick.read = read;
+  Pick2.read = read;
   function load(saved, offer, def) {
     return Pick.read(saved ?? def, offer) ?? def;
   }
-  Pick.load = load;
+  Pick2.load = load;
 })(Pick ||= {});
 
 // Price.ts
@@ -842,31 +842,31 @@ var MINUTES = {
 };
 var SPEEDS2 = { slow: 1, fast: 2, ultrafast: 6 };
 var Price;
-((Price) => {
+((Price2) => {
   function usage(speed) {
     return { input: 0, write: 0, read: 0, output: 0, searches: 0, seconds: 0, speed };
   }
-  Price.usage = usage;
+  Price2.usage = usage;
   function rate(model) {
     return RATES[model];
   }
-  Price.rate = rate;
+  Price2.rate = rate;
   function times(speed) {
     return SPEEDS2[speed] ?? 1;
   }
-  Price.times = times;
+  Price2.times = times;
   function cost(model, use) {
     const long = use.input + use.write + use.read > PROMPT ? LONG[model] : undefined;
-    const rate2 = long ?? RATES[model];
+    const rate = long ?? RATES[model];
     const minute = MINUTES[model];
-    if (rate2 === undefined && minute === undefined) {
+    if (rate === undefined && minute === undefined) {
       throw new Error("no price for " + model);
     }
-    const tokens = rate2 === undefined ? 0 : use.input * rate2.input + use.write * rate2.write + use.read * rate2.read + use.output * rate2.output;
+    const tokens = rate === undefined ? 0 : use.input * rate.input + use.write * rate.write + use.read * rate.read + use.output * rate.output;
     const audio = minute === undefined ? 0 : use.seconds / 60 * minute * 1e6;
     return Math.ceil(tokens * Price.times(use.speed) + use.searches * SEARCH * 1e6 + audio);
   }
-  Price.cost = cost;
+  Price2.cost = cost;
 })(Price ||= {});
 
 // View.ts
@@ -1282,8 +1282,8 @@ function part_rows(v, id, n, t, talk) {
   }
   const text = n === 1 ? "fold" : GLYPH.open + " " + n + "x · fold";
   if (n > 1) {
-    const rows2 = [...part_rows(v, id, half, t, talk), ...part_rows(v, id + half, half, t, talk)];
-    return [{ $: "Box", id, n, text, rows: rows2 }];
+    const rows = [...part_rows(v, id, half, t, talk), ...part_rows(v, id + half, half, t, talk)];
+    return [{ $: "Box", id, n, text, rows }];
   }
   const rows = entry === undefined ? [] : whole_rows(id, entry);
   return [{ $: "Box", id, n, text, rows }];
@@ -1727,7 +1727,9 @@ function chat() {
   visualViewport.onresize = () => draw(true);
   document.onscroll = () => {
     P.end = innerHeight + scrollY >= document.documentElement.scrollHeight - 1;
+    mine_show();
   };
+  $(".mine").onclick = mine;
   draw(true);
 }
 function signed() {
@@ -1883,8 +1885,8 @@ function meter(stream, rec) {
   requestAnimationFrame(frame);
 }
 function words(audio) {
-  const act2 = { $: "voice", type: audio.type, body: () => audio };
-  link_send(v, act2, heard);
+  const act = { $: "voice", type: audio.type, body: () => audio };
+  link_send(v, act, heard);
   draw(false);
 }
 function heard(out) {
@@ -2206,7 +2208,10 @@ function html_parse(html) {
 function draw(stick) {
   P.stick = P.stick && stick;
   if (P.frame === 0) {
-    P.frame = requestAnimationFrame(paint);
+    P.frame = requestAnimationFrame(() => {
+      paint();
+      mine_show();
+    });
   }
 }
 function paint() {
@@ -2279,6 +2284,18 @@ function anchor() {
     }
   }
   return null;
+}
+function mine() {
+  const rows = [...document.querySelectorAll("#log .msg.user")];
+  rows.findLast(mine_above)?.scrollIntoView();
+  mine_show();
+}
+function mine_show() {
+  const first = document.querySelector("#log .msg.user");
+  $(".mine").hidden = first === null || !mine_above(first);
+}
+function mine_above(el) {
+  return el.getBoundingClientRect().top < $("header").getBoundingClientRect().bottom;
 }
 function go(path) {
   if (location.pathname !== path) {
