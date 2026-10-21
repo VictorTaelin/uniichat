@@ -1115,12 +1115,11 @@ ${Memory.cut(line)}| ← LIMIT`;
 
   // /tree: a section for the view, and the tree as a bracket: a column
   // for the messages, then one per level, each node beside the two it
-  // merges. The leftmost column in view is packed: each stretch of the
-  // chat as the node of that level covering it (where none is built yet,
-  // the highest below that is: the chat's end); the columns right of it
-  // hold the levels above, spread to match. It opens on the view's top
-  // level, the view's nodes marked. The script lays out the cards near
-  // the screen and fetches their text (/api/tree): a chat has thousands
+  // merges. A column holds its level's nodes only (one not built yet
+  // said so); the leftmost in view is packed, the columns right of it
+  // spread to match. It opens on the view's top level, the view's nodes
+  // marked "in context". The script lays out the cards near the screen
+  // and fetches their text (/api/tree): a chat has thousands
   export function* page(mem: Memory): Generator<string> {
     const esc   = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;");
     // the nodes built: those whose slot in the tree's index has a day
@@ -1133,9 +1132,11 @@ ${Memory.cut(line)}| ← LIMIT`;
 <link rel="stylesheet" href="/style.css">
 <style>
 body { height: 100dvh; display: flex; flex-direction: column; }
-header > a { display: grid; place-items: center; text-decoration: none; } header > .here { background: var(--ink); color: var(--paper); }
-#back { margin-left: 6px; } header > button:disabled { opacity: .4; cursor: default; }
-.top { padding: 10px 20px 0; } .back { display: inline-block; padding: 8px 0; font-size: 14px; color: var(--mid); text-decoration: none; } .back:hover { color: var(--ink); }
+header > a { display: grid; place-items: center; text-decoration: none; } header > .here, header > .here:hover { background: var(--ink); color: var(--paper); }
+.top { display: flex; align-items: center; gap: 6px; padding: 10px 20px 0; } .back { padding: 8px 0; font-size: 14px; color: var(--mid); text-decoration: none; } .back:hover { color: var(--ink); }
+.top small { flex: 1; min-width: 0; margin-left: 10px; font: 12px/1.35 var(--sans); color: var(--mid); } .top small b { font-weight: 600; letter-spacing: .06em; font-size: 11px; padding-left: 5px; box-shadow: inset 3px 0 var(--mid); }
+.top button { height: 32px; min-width: 36px; padding: 0 12px; border-radius: 8px; background: var(--block); font-size: 13.5px; font-weight: 500; } .top button:hover { background: var(--hover); } .top button:disabled { opacity: .4; cursor: default; }
+.top [hidden] { display: none; } .note { position: absolute; left: 0; right: 0; padding: 0 14px; font: 12.5px/1.45 var(--sans); color: var(--mid); }
 section { display: none; flex: 1; overflow: auto; padding: 0 20px 20px; outline: none; font: 15px/1.55 var(--serif); text-wrap: pretty; } section:target { display: block; }
 h4 { margin: .8em 0 .2em; font: 600 11.5px/1.5 var(--sans); color: var(--mid); } pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
 #TREE { --g: 2em; gap: var(--g); scroll-snap-type: x mandatory; scroll-padding: 0 20px; } #TREE:target { display: flex; }
@@ -1143,7 +1144,7 @@ h4 { margin: .8em 0 .2em; font: 600 11.5px/1.5 var(--sans); color: var(--mid); }
 .col { flex: 0 0 min(22em, 65vw); position: relative; scroll-snap-align: start; }
 .col h3 { position: sticky; top: 0; z-index: 2; margin: 0; height: 3em; font: 600 .8em/3em var(--sans); letter-spacing: .06em; color: var(--mid); background: var(--paper); cursor: pointer; margin-right: calc(0px - var(--g)); } .col h3:hover { color: var(--ink); }
 .s { position: absolute; left: 0; right: 0; padding: 0 14px .7em; border-radius: 10px; background: var(--block); } .s h4 { margin-top: .7em; }
-.s:focus-visible { outline: 2px solid var(--ink); outline-offset: -2px; } .wait { overflow: hidden; } .s.in { box-shadow: inset 3px 0 var(--mid); } .s.in h4::after { content: " · IN VIEW"; }
+.s:focus-visible { outline: 2px solid var(--ink); outline-offset: -2px; } .wait { overflow: hidden; } .s.in { box-shadow: inset 3px 0 var(--mid); } .s.in h4::after { content: " · IN CONTEXT"; } .s.none { background: none; outline: 1px dashed var(--hair); outline-offset: -1px; color: var(--mid); }
 .up::after { content: ""; position: absolute; left: 100%; width: calc(var(--g) / 2); top: 50%; border-top: 1px solid var(--frame); }
 .dn::before { content: ""; position: absolute; right: 100%; width: calc(var(--g) / 2); top: var(--t); height: calc(var(--h) + 1px); border-left: 1px solid var(--frame); background: linear-gradient(var(--frame), var(--frame)) 0 var(--m) / 100% 1px no-repeat; }
 .s.user pre, .s.unii pre { font: 16px/1.55 var(--sans); } .s.tool pre, .s.echo pre { font: 12.5px/1.5 var(--mono); }
@@ -1151,16 +1152,15 @@ h4 { margin: .8em 0 .2em; font: 600 11.5px/1.5 var(--sans); color: var(--mid); }
 </style>
 <noscript><style>#VIEW { display: block; }</style></noscript>
 <script>["#VIEW", "#TREE"].includes(location.hash) || (location.hash = "TREE");</script>
-<header><a class="brand" href="/"><i class="mark"></i><span>UniiChat</span></a><a href="#VIEW">VIEW</a><a href="#TREE">TREE</a><button id=back>‹</button><button id=next>›</button></header>
-<nav class="top"><a class="back" href="/">← Chat</a></nav>
+<header><a class="brand" href="/"><i class="mark"></i><span>UniiChat</span></a><a href="#VIEW">VIEW</a><a href="#TREE">TREE</a></header>
+<nav class="top"><a class="back" href="/">← Chat</a><small id=legend></small><button id=back aria-label="Level below">‹</button><button id=next aria-label="Level above">›</button></nav>
 <section id="VIEW">`;
     yield view.map(({ h, t }) => "<h4>" + esc(h) + "</h4><pre>" + esc(t) + "</pre>").join("");
     yield '</section>\n<section id="TREE">' + ["ROOT", ...levels.map((l) => "LVL" + l)].map((name) => "<div class=col><h3 tabindex=0>" + name + "</h3></div>").join("");
-    // F, the leftmost column's cards: the view, its nodes above level L
-    // split down to it (a node not built: its message), then merged up
-    // to L where built, so each column holds one level and a node
-    // joins its two halves (the view, of nodes of many levels, is
-    // marked, and whole under VIEW); each card's height is
+    // F, the leftmost column's cards: level L's nodes (L -1: the
+    // messages), so a node joins its two halves (the view's nodes, of
+    // many levels, are marked, and whole under VIEW); the messages past
+    // L's last node, too few for one, a note under it; each card's height is
     // as last measured (else its level's mean), those of a column right
     // of it as theirs need: a node is set mid its cards, the last one's
     // slot grown till it fits; the message at the top of the screen
@@ -1172,30 +1172,15 @@ const N = ${mem.count}, B = ${JSON.stringify(has)}, V = ${JSON.stringify(mem.vie
 const tree = document.getElementById("TREE"), cols = [...tree.children], em = parseFloat(getComputedStyle(tree).fontSize), G = .75 * em, Y = 2.6 * em;
 const T = B.length - 1, vt = Math.max(-1, ...V.map((p) => p[0])), seen = new Set(V.map((p) => p.join(".")));
 const has = (l, i) => (l < 0 ? i < N : B[l][i] === "1"), at = (l, i) => i * 2 ** Math.max(0, l), len = (l) => 2 ** Math.max(0, l);
+const LEGEND = { "#TREE": "<b>IN CONTEXT</b> marks the text Unii's prompt holds now: old messages as high-level summaries, recent ones low or whole.", "#VIEW": "What Unii's prompt holds now, in order: old messages as summaries, recent ones whole." };
+const note = document.createElement("p");
+note.className = "note";
 const lo = (list, ok) => { let a = 0, z = list.length; while (a < z) { const m = (a + z) >> 1; ok(list[m]) ? (z = m) : (a = m + 1); } return a; };
 const step = () => cols[1].offsetLeft - cols[0].offsetLeft || 1;
 const H = new Map(), got = new Map(), shown = new Map();
 let mean = {}, L = vt, plan, moving = 0, again = 0, wait, width = 0, started = false, left = 0, sliding = false, done = () => {}, goal = null;
 const height = (l, i) => H.get(l + "." + i) ?? (mean[l] ? mean[l][0] / mean[l][1] : 6 * em);
-const frontier = (L) => {
-  let F = [];
-  const down = (l, i) => (l <= L && has(l, i) ? F.push([l, i]) : l <= 0 ? F.push([-1, i]) : (down(l - 1, 2 * i), down(l - 1, 2 * i + 1)));
-  V.forEach(([l, i]) => down(l, i));
-  for (let l = 0; l <= L; l++) {
-    const up = [];
-    for (let k = 0; k < F.length; ) {
-      const a = at(...F[k]);
-      if (a % 2 ** l === 0 && has(l, a / 2 ** l)) {
-        up.push([l, a / 2 ** l]);
-        while (k < F.length && at(...F[k]) < a + 2 ** l) k++;
-      } else {
-        up.push(F[k++]);
-      }
-    }
-    F = up;
-  }
-  return F;
-};
+const frontier = (L) => Array.from({ length: L < 0 ? N : B[L].length }, (_, i) => [L, i]);
 const layout = (L) => {
   const F = frontier(L), A = F.map((p) => at(...p)), slot = F.map((p) => height(...p) + G), P = new Float64Array(F.length + 1);
   const find = (m) => lo(A, (a) => a > m) - 1;
@@ -1205,11 +1190,9 @@ const layout = (L) => {
     sums();
     ups[l] = [];
     for (let i = 0; i < B[l].length; i++) {
-      if (B[l][i] === "1") {
-        const a = find(i * 2 ** l), b = find((i + 1) * 2 ** l - 1) + 1, short = height(l, i) + G - (P[b] - P[a]);
-        short > 0 && (slot[b - 1] += short);
-        ups[l].push([i, a, b]);
-      }
+      const a = find(i * 2 ** l), b = find((i + 1) * 2 ** l - 1) + 1, short = height(l, i) + G - (P[b] - P[a]);
+      short > 0 && (slot[b - 1] += short);
+      ups[l].push([i, a, b]);
     }
   }
   sums();
@@ -1231,19 +1214,21 @@ const layout = (L) => {
 // where it meets this card
 const link = (cards, c, x) => {
   const [l, i, y, h, a, b] = cards[c][x], mid = y + h / 2, kids = cards[c - 1] ?? [];
-  const up = c <= T && has(c, Math.floor(at(l, i) / 2 ** c)) ? 1 : 0;
+  const up = c <= T && at(l, i) < B[c].length * 2 ** c ? 1 : 0;
   const k0 = kids[lo(kids, (q) => q[4] >= a)], k1 = kids[lo(kids, (q) => q[4] >= b) - 1];
   if (!k0 || k0[4] !== a || !k1) return [up, 0, -1, 0];
   const y0 = Math.min(k0[2] + k0[3] / 2, mid), y1 = Math.max(k1[2] + k1[3] / 2, mid);
   return [up, y0 - y, y1 - y0, mid - y0];
 };
 const make = (l, i) => {
-  const s = document.createElement("div"), x = got.get(l + "." + i);
+  const s = document.createElement("div");
+  let x = got.get(l + "." + i);
   s.className = seen.has(l + "." + i) ? "s wait in" : "s wait";
   s.tabIndex = 0;
   s.li = [l, i];
   s.append(document.createElement("h4"), document.createElement("pre"));
-  s.firstChild.textContent = l < 0 ? "ROOT #" + i : "LVL" + l + " #" + at(l, i) + "-" + (at(l, i) + len(l) - 1);
+  s.firstChild.textContent = l < 0 ? "ROOT #" + i : "LVL" + l + " #" + at(l, i) + (l > 0 ? "-" + (at(l, i) + len(l) - 1) : "");
+  has(l, i) || (s.classList.add("none"), (x = { h: s.firstChild.textContent, t: "Not summarized yet." }));
   x && fill(s, x);
   return s;
 };
@@ -1265,7 +1250,7 @@ const load = () => {
       want.push(list[x][0] + "." + list[x][1]);
     }
   });
-  const keys = [...new Set(want)].filter((k) => !got.has(k));
+  const keys = [...new Set(want)].filter((k) => !got.has(k) && has(...k.split(".").map(Number)));
   for (let j = 0; j < keys.length; j += 200) {
     const part = keys.slice(j, j + 200), put = (list) => {
       part.forEach((k, x) => (got.set(k, list[x] ?? { h: k, t: "(none)" }), shown.has(k) && fill(shown.get(k), got.get(k))));
@@ -1279,7 +1264,7 @@ const load = () => {
 const draw = (y = tree.scrollTop, e = 1, old) => {
   const p = plan, sh = tree.clientHeight, keep = new Set(), [c0, c1] = near();
   cols.forEach((col, c) => {
-    col.style.height = Y + Math.max(p.total, e < 1 ? old.total : 0) + "px";
+    col.style.height = Y + Math.max(p.total, e < 1 ? old.total : 0) + 4 * em + "px";
     const list = p.cards[c];
     for (let x = c < c0 || c > c1 ? list.length : lo(list, (q) => q[8] >= y - sh / 2); x < list.length && list[x][7] <= y + 1.5 * sh; x++) {
       const [l, i, t, h, , , [up, ...v]] = list[x], k = l + "." + i, w = e < 1 && old.get(k);
@@ -1297,6 +1282,9 @@ const draw = (y = tree.scrollTop, e = 1, old) => {
     }
   });
   shown.forEach((s, k) => keep.has(k) || (s.remove(), shown.delete(k)));
+  const upto = L < 0 ? N : B[L].length * 2 ** L;
+  upto < N ? (note.textContent = (N - upto === 1 ? "Message #" + upto + " isn't" : "Messages #" + upto + "-" + (N - 1) + " aren't") + " in a LVL" + L + " summary yet: each holds " + 2 ** L + ".") : note.remove();
+  upto < N && ((note.style.top = Y + p.total + "px"), note.parentNode !== cols[L + 1] && cols[L + 1].append(note));
   y !== tree.scrollTop && (tree.scrollTop = y);
   back.disabled = tree.scrollLeft < 1;
   next.disabled = tree.scrollLeft + tree.clientWidth >= tree.scrollWidth - 1;
@@ -1367,6 +1355,7 @@ tree.addEventListener("scroll", () => {
 plan = layout(L);
 onload = onresize = onhashchange = () => {
   back.hidden = next.hidden = location.hash !== "#TREE";
+  legend.innerHTML = LEGEND[location.hash] ?? "";
   document.querySelectorAll("header a").forEach((a) => a.classList.toggle("here", a.hash === location.hash));
   // (TREE is shown once the page has parsed, as its hash targets it)
   if (location.hash === "#TREE" && tree.clientWidth > 0) {
@@ -1418,7 +1407,7 @@ tree.onkeydown = (e) => {
     }
     const [a, b] = part === null ? [i, i] : Memory.span(part);
     const when = Memory.date(mem, a) + (a === b ? "" : " – " + Memory.date(mem, b));
-    const head = root === null ? ["LVL" + l + " #" + a + "-" + b, when, Memory.bytes(text) + " B"] : ["ROOT #" + i, when, root.kind, root.size + " B"];
+    const head = root === null ? ["LVL" + l + " #" + a + (a === b ? "" : "-" + b), when, Memory.bytes(text) + " B"] : ["ROOT #" + i, when, root.kind, root.size + " B"];
     return { h: head.join(" · "), t: text, k: root?.kind };
   }
 
