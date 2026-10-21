@@ -1504,6 +1504,10 @@ export namespace Main {
       case "/tree": {
         return new Response(Main.stream(Memory.page(mem)), { headers: { "content-type": "text/html; charset=utf-8" } });
       }
+      case "/api/tree": {
+        const get = (new URL(req.url).searchParams.get("get") ?? "").split(",").slice(0, 200);
+        return Response.json(get.map((key) => Memory.card(mem, ...(key.split(".").map(Number) as [number, number]))));
+      }
       case "/export": {
         const name = "unii-memory-" + new Date().toISOString().slice(0, 10) + ".json";
         const json = { "content-type": "application/json", "content-disposition": 'attachment; filename="' + name + '"' };

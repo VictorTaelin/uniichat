@@ -83,8 +83,8 @@ body.solo h1 { margin: 0; font: 400 46px/1.05 var(--serif); letter-spacing: -.01
 /* Header: the logo, then buttons: grey chips, no borders. It and the footer keep clear of a phone's notch and
    home bar (safe-area insets: the page is drawn under them) */
 header { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 6px; height: var(--head); padding: 0 max(20px, env(safe-area-inset-right)) 0 max(20px, env(safe-area-inset-left)); background: var(--paper); border-bottom: 1px solid var(--hair); }
-header > button { height: 32px; padding: 0 12px; border-radius: 8px; background: var(--block); font-size: 13.5px; font-weight: 500; }
-header > button:hover { background: var(--hover); }
+header > :is(button, a) { height: 32px; padding: 0 12px; border-radius: 8px; background: var(--block); font-size: 13.5px; font-weight: 500; }
+header > :is(button, a):hover { background: var(--hover); }
 header > .brand { margin-right: auto; display: flex; align-items: center; gap: 10px; height: auto; padding: 0; background: none; font: 600 20px/1 var(--brand); letter-spacing: -.01em; }
 header > .brand:hover { background: none; }
 /* the logo: its shape (mark.svg, the infinity cut out) filled with the
@@ -146,8 +146,8 @@ body.account footer > :not(#toast) { display: none; }
 /* Popovers (the browser's): the menu, the wallet, Import History */
 [popover] { inset: 60px 20px auto auto; margin: 0; width: 280px; padding: 10px 14px; border: 1px solid var(--hair); border-radius: 14px; color: var(--ink); background: var(--lift); box-shadow: var(--shadow); }
 [popover] p { margin: 8px 0 6px; font-size: 14px; }
-[popover] > button { display: block; width: 100%; padding: 8px 4px; text-align: left; font-size: 14.5px; border-radius: 10px; }
-[popover] > button:hover { background: var(--hover); }
+[popover] > :is(button, a) { display: block; width: 100%; padding: 8px 4px; text-align: left; font-size: 14.5px; border-radius: 10px; text-decoration: none; }
+[popover] > :is(button, a):hover { background: var(--hover); }
 #menu { width: 180px; padding: 6px; box-shadow: 0 8px 24px rgb(0 0 0 / .12); }
 .ai { margin: 6px 0 0; text-align: center; font: 12px var(--sans); color: var(--mid); }
 body:not(.guest) .ai { display: none; }
@@ -323,11 +323,12 @@ header > .imping { display: flex; flex-direction: column; justify-content: cente
 /* a finger needs 44px: small buttons take taps around them (a box
    centered on each, not drawn), links in small print above and below */
 @media (pointer: coarse) {
-  :is(header > button, #pick button, #tabs button) { position: relative; }
-  :is(header > button, #pick button, #tabs button, .copy, .open.one > .fold)::after { content: ""; position: absolute; left: 50%; top: 50%; width: max(100%, 44px); height: max(100%, 44px); transform: translate(-50%, -50%); }
+  :is(header > :is(button, a), #pick button, #tabs button) { position: relative; }
+  :is(header > :is(button, a), #pick button, #tabs button, .copy, .open.one > .fold)::after { content: ""; position: absolute; left: 50%; top: 50%; width: max(100%, 44px); height: max(100%, 44px); transform: translate(-50%, -50%); }
   :is(.ai, .fine, .foot) a { padding: 14px 0; }
   :is(.chip, .usd button) { height: 44px; }
   [popover] > button { min-height: 44px; }
+  [popover] > a { padding: 11px 4px; }
 }
 
 /* images: under a message, each a link; over the box, those waiting to
@@ -342,7 +343,7 @@ header > .imping { display: flex; flex-direction: column; justify-content: cente
   :root { --head: 51px; }
   header { padding: 0 14px; }
   .brand span { display: none; }
-  header > button { height: 30px; padding: 0 10px; font-size: 13px; }
+  header > :is(button, a) { height: 30px; padding: 0 10px; font-size: 13px; }
   #log { width: calc(100% - 28px); }
   footer { padding: 12px 14px max(8px, env(safe-area-inset-bottom)); }
   .composer { padding: 5px 5px 5px 16px; }
