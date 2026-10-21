@@ -4,9 +4,10 @@
 // Deltas (live pieces) and an Entry per finished message out. send()
 // hands the agent a message at its next chance, stop() aborts, `left`
 // holds those never taken. Every vendor is an API run in our loop
-// (Agent.ts). A patient call (a summary's) asks again, AGAIN after each
-// try nothing answered (the vendor down or refusing it, as when the API
-// key's credit is gone; our setup failing), till
+// (Agent.ts) but claude-sub, run in Claude Code's (ClaudeSub.ts). A
+// patient call (a summary's) asks again, AGAIN after each try nothing
+// answered (the vendor down or refusing it, as when the API key's
+// credit is gone; our setup failing), till
 // one is answered or we end it (a stop; its payer's refusal: its node
 // then waits for the user's credit, with no call: Memory.ts `hold`): an
 // outage only delays it, and no summary is made of a failure that isn't
@@ -25,6 +26,7 @@
 // user's calls of its prefix would wait on.
 
 import { Agent } from "./Agent.ts";
+import { ClaudeSub } from "./ClaudeSub.ts";
 import { stream_lines } from "./Clip.ts";
 import { Machine } from "./Machine.ts";
 import type { Pick } from "./Pick.ts";
@@ -38,7 +40,7 @@ import type { Usage } from "./Price.ts";
 // result, a note from before the chat (imported)
 export type Kind = "user" | "work" | "mind" | "unii" | "tool" | "echo" | "note";
 
-export type Vendor = "claude-api" | "openai-api";
+export type Vendor = "claude-api" | "openai-api" | "claude-sub";
 
 // an image: its mime type, its bytes in base64
 export type Img = { type: string; data: string };
@@ -143,6 +145,7 @@ const AGAIN = 60e3;
 export const TTL: Record<Vendor, number> = {
   "claude-api" : 300e3,
   "openai-api" : 1800e3,
+  "claude-sub" : 300e3,
 };
 
 // the prefixes cached, by key (AskAI.keys)
@@ -196,7 +199,7 @@ export namespace AskAI {
   // one try; a vendor that throws gives a failed one
   export function start(ask: Ask, on: (ev: Event) => void): Try {
     try {
-      return Agent.ask(ask, on);
+      return ask.vendor === "claude-sub" ? ClaudeSub.ask(ask, on) : Agent.ask(ask, on);
     } catch (err: any) {
       const end = AskAI.end(err.message);
       const send = (say: Say) => end.left.push(say);

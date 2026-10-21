@@ -747,7 +747,8 @@ var OPENAI = [
 ];
 var MODELS = {
   "claude-api": [OPUS, SONNET, HAIKU],
-  "openai-api": OPENAI
+  "openai-api": OPENAI,
+  "claude-sub": [{ ...OPUS, speeds: ["slow"] }, SONNET, HAIKU]
 };
 var EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 var SPEEDS = ["slow", "fast", "ultrafast"];
@@ -770,7 +771,7 @@ var Pick;
   Pick.models = models;
   function options(pick, move2, { vendors, models: models2 }) {
     const speeds = Pick.model(pick.vendor, pick.model)?.speeds ?? [];
-    const all = (vs) => Pick.models(vs, models2).map(([v, m]) => [m.label, Pick.on(pick, v, m)]);
+    const all = (vs) => Pick.models(vs, models2).map(([v, m]) => [Pick.shown(v, m.label, vendors), Pick.on(pick, v, m)]);
     switch (move2) {
       case "next":
       case "prev":
@@ -800,6 +801,11 @@ var Pick;
     return hit === undefined ? null : hit[1];
   }
   Pick.move = move;
+  function shown(vendor, label2, vendors) {
+    const twin = vendors.some((v) => v !== vendor && Pick.model(v, label2) !== undefined);
+    return twin ? label2 + " (" + vendor + ")" : label2;
+  }
+  Pick.shown = shown;
   function label(pick) {
     return [pick.vendor, pick.model, pick.effort, pick.speed].join(":");
   }
@@ -1143,7 +1149,8 @@ function view_pick(v) {
   if (v.pick === null) {
     return [];
   }
-  const { model, effort, speed } = v.pick;
+  const { effort, speed } = v.pick;
+  const model = Pick.shown(v.pick.vendor, v.pick.model, v.vendors);
   const rate = Price.rate(Pick.ask(v.pick).model);
   const price = rate === undefined ? "" : ": $" + rate.input + "/M tokens in, $" + rate.output + "/M out";
   return [

@@ -543,7 +543,8 @@ export function view_pick(v: View): Knob[] {
   if (v.pick === null) {
     return [];
   }
-  const { model, effort, speed } = v.pick;
+  const { effort, speed } = v.pick;
+  const model = Pick.shown(v.pick.vendor, v.pick.model, v.vendors);
   const rate  = Price.rate(Pick.ask(v.pick).model);
   const price = rate === undefined ? "" : ": $" + rate.input + "/M tokens in, $" + rate.output + "/M out";
   return [

@@ -78,7 +78,7 @@ also be set as the variable `UNII_<KEY>`:
   http://127.0.0.1:8788). Another port: `UNII_SITE=http://127.0.0.1:9000
   bun Server.ts 9000`.
 - `vendors`: what the server offers, comma-separated: `claude-api`
-  (default), `openai-api`.
+  (default), `openai-api`, `claude-sub` (a Claude plan, below).
 - `models`: the models offered, by label (Pick.ts; default all).
 - `pick`: what a chat runs on until it picks another,
   `vendor:model:effort:speed` (default `claude-api:sonnet-5.5:medium:slow`).
@@ -93,6 +93,8 @@ also be set as the variable `UNII_<KEY>`:
   process). With a number, `Server.ts` only routes, behind a proxy that
   honors its `x-unii-worker` header (Server.ts explains).
 - `apple`, `apns`: the iOS app's App ID and push key id (ios/).
+- `claude_sub`, `claude`: claude-sub's Claude Code config dir (default
+  ~/.unii/claude-sub) and executable (default: the Agent SDK's).
 
 Keys are read from the environment: `ANTHROPIC_API_KEY`,
 `OPENAI_API_KEY`, `RESEND_API_KEY` (to email sign-in links; none: they
@@ -102,6 +104,12 @@ With only an OpenAI key, set `vendors`, `pick` and `compactor` to
 `openai-api` models, e.g. `UNII_VENDORS=openai-api
 UNII_PICK=openai-api:gpt-6.1-sol:medium:slow
 UNII_COMPACTOR=openai-api:gpt-6-luna:high:slow`.
+
+With a Claude plan instead, `bun install`, run `bun Term.ts claude`
+(`unii claude`; `logout`, `status`) to sign in through Claude Code, and
+use `claude-sub` the same way. Every user's calls then run on your
+plan: Anthropic allows no one to offer others their Claude plan, so
+offer it only on a server for yourself. A server that bills refuses it.
 
 A self-hosted server is free: it bills no one, shows no prices, and calls
 only the model vendors. Billing.ts is the one place a hosted server

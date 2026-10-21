@@ -96,13 +96,19 @@ create index if not exists acts_big on acts (at) where ans <> '{}';
 
 export namespace Cloud {
 
-  // the server's processes share it (Server.ts, Disk.db)
+  // the server's processes share it (Server.ts, Disk.db). A server that
+  // bills offers no claude-sub: a Claude plan is its owner's alone, and
+  // Anthropic lets no third party offer its users one's limits
   export function open(change: Cloud["change"], signed: Cloud["signed"], post: Cloud["post"]): Cloud {
     const file = path.join(config.DIR, "cloud.db");
     const db = Disk.db(file);
     db.exec(SCHEMA);
     const base = { db, wal: file + "-wal", change, signed, post, waits: new Map() };
-    return { ...base, billing: Billing.open(base) };
+    const billing = Billing.open(base);
+    if (billing.bills && config.OFFER.vendors.includes("claude-sub")) {
+      throw new Error("config: a server that bills can't offer claude-sub (a Claude plan is one person's, not its users')");
+    }
+    return { ...base, billing };
   }
 
   // a terminal's session made: its wait answered, if here
