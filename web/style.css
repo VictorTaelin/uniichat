@@ -414,3 +414,35 @@ header > .imping { display: flex; flex-direction: column; justify-content: cente
 @keyframes rise { from { opacity: 0; transform: translateY(4px); } }
 @keyframes gone { to { opacity: 0; } }
 @keyframes hold { to { visibility: visible; } }
+
+/* The server's settings, the owner's, at the settings page's bottom: a
+   row a setting or a key, its name over a line about it, its control,
+   where its value comes from; Save sticks to the bottom */
+.owned > .sub { margin: 0 0 14px; padding-top: 22px; border-top: 1px solid var(--hair); font-size: 13.5px; }
+.settings > section > .sub { margin: 0 0 4px; font-size: 13.5px; }
+.set { padding: 14px 0; }
+.set + .set { border-top: 1px solid var(--hair); }
+.set label { display: block; font-weight: 500; }
+.set label small { display: block; margin-top: 2px; font-size: 13.5px; font-weight: 400; color: var(--mid); }
+.settings code { font: .88em var(--mono); background: var(--block); border-radius: 5px; padding: .1em .35em; overflow-wrap: anywhere; }
+.set .field { margin-top: 8px; }
+.set .field :where(input:not([type=checkbox]), select, textarea) { box-sizing: border-box; width: 100%; height: 40px; padding: 0 10px; border: 1px solid var(--frame); border-radius: 9px; background: var(--paper); color: var(--ink); font: 16px var(--sans); }
+.set .field textarea { display: block; height: auto; padding: 9px 10px; line-height: 20px; resize: vertical; }
+.set .field :where(input, select, textarea):focus { outline: 2px solid var(--ink); outline-offset: -1px; }
+.set .four { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.set .opts { display: flex; flex-wrap: wrap; gap: 6px 18px; }
+.set .opt { display: inline-flex; gap: 6px; align-items: center; font-weight: 400; }
+.set .opt[hidden] { display: none; }
+.set .from { margin: 6px 0 0; font-size: 13px; color: var(--mid); }
+.set.unset .from { color: var(--ink); }
+.set .reset { margin-left: 4px; padding: 0; background: none; font: inherit; color: var(--ink); text-decoration: underline; cursor: pointer; }
+.set :is(.err, .warn) { margin: 6px 0 0; font-size: 13.5px; }
+.set .err, .settings .why, .owned > .why { color: var(--red); }
+.set .warn { color: var(--mid); }
+.set :is(.err, .warn):empty, .settings .why:empty { display: none; }
+.settings .save { position: sticky; bottom: 0; display: flex; gap: 12px; align-items: center; justify-content: flex-end; padding: 14px 0 max(14px, env(safe-area-inset-bottom)); border-top: 1px solid var(--hair); background: var(--paper); }
+.settings .save .why { flex: 1; margin: 0; font-size: 13.5px; }
+.settings .go { min-width: 96px; background: var(--ink); color: var(--paper); }
+.settings .go:hover { background: var(--mid); }
+.settings .go:disabled { opacity: .4; }
+@media (max-width: 600px) { .set .four { grid-template-columns: 1fr 1fr; } }

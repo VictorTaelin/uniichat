@@ -7,8 +7,9 @@
 // the log's rows only once a message (but a stream's piece) or an act
 // changed them, what streams in a place of its own, so typing, or a reply
 // streaming, touches no row.
-// The markup is index.html's: the header, the chat or the account page
-// (/account), and the footer as the terminal's. A tab is no device; a
+// The markup is index.html's: the header, the chat or the settings page
+// (/settings, once /account: the account's, then, for the server's
+// owner, the server's), and the footer as the terminal's. A tab is no device; a
 // signed-out one gets the chat offline (Guest). In the iOS app (ios/),
 // credit is bought through the App Store (APP), and sign-in is by email
 // only (another company's would need Sign in with Apple).
@@ -75,6 +76,7 @@ const BACK = $<HTMLInputElement>("#import [name=back]");
 const P = {
   id    : "",
   guest : false,
+  owner : false,
   imgs  : [] as Blob[],
   rec   : null as MediaRecorder | null,
   shown : "",
@@ -107,7 +109,7 @@ function kept(fact: string): string {
 async function boot(): Promise<void> {
   document.head.insertAdjacentHTML("beforeend", `<style>${theme_css()}</style>`);
   const q = new URLSearchParams(location.search);
-  history.replaceState(null, "", location.pathname === "/account" ? "/account" : "/");
+  history.replaceState(null, "", PAGES.includes(location.pathname) ? "/settings" : "/");
   if (q.has("terminal")) {
     solo("Your terminal is signed in.", "You can close this tab and go back to it.");
     return;
@@ -131,6 +133,7 @@ async function boot(): Promise<void> {
     return;
   }
   P.id = me.id;
+  P.owner = me.owner === true;
   signed();
   route();
   v.bills = me.bills;
@@ -153,6 +156,9 @@ async function boot_me(): Promise<any> {
     await new Promise((ok) => setTimeout(ok, View.RETRY));
   }
 }
+
+// the settings page's paths, drawn in #account (/account: an older link)
+const PAGES = ["/settings", "/account"];
 
 // a page of one note: the terminal signed in, the account deleted
 function solo(title: string, sub: string): void {
@@ -935,12 +941,17 @@ function anchor(): { a: number; top: number } | null {
   return null;
 }
 
-// Account
-// =======
-// The account page (Html.account_html), drawn anew each time it is shown
-// and after each act on it.
+// Settings
+// ========
+// The settings page (Html.account_html), drawn anew each time it is shown
+// and after each act on it: the account's, then, for the server's owner,
+// the server's settings (Html.settings_html), drawn anew after each
+// save, which sends only what changed (null: back to the default; a key
+// out), and the version of the files it read, so a save on what changed
+// since is refused. A key typed is sent once and gone from the page as
+// it is drawn again.
 
-// shows the page at path: the chat ("/") or the account
+// shows the page at path: the chat ("/") or the settings
 function go(path: string): void {
   if (location.pathname !== path) {
     history.pushState(null, "", path);
@@ -948,9 +959,9 @@ function go(path: string): void {
   route();
 }
 
-// the account page keeps of the footer only its toasts (style.css)
+// the settings page keeps of the footer only its toasts (style.css)
 function route(): void {
-  const page = location.pathname === "/account";
+  const page = PAGES.includes(location.pathname);
   $("#log").hidden = page;
   document.body.classList.toggle("account", page);
   $("#account").hidden = !page;
@@ -963,13 +974,13 @@ function route(): void {
 
 async function account(): Promise<void> {
   const el = $("#account");
-  const res = await fetch("/api/account").catch(() => null);
+  const [res, set] = await Promise.all([fetch("/api/account").catch(() => null), P.owner ? fetch("/api/settings").catch(() => null) : null]);
   const a: View.Account | null = res !== null && res.ok ? await res.json() : null;
   if (a === null) {
     el.innerHTML = `<p class="sub">Could not read your account. Try again in a moment.</p>`;
     return;
   }
-  el.innerHTML = Html.account_html(a, APP !== null);
+  el.innerHTML = Html.account_html(a, APP !== null, P.owner);
   const kill = $<HTMLFormElement>("#account .kill");
   const del  = $<HTMLButtonElement>("#account .del");
   const name = kill.querySelector("input")!;
@@ -988,6 +999,14 @@ async function account(): Promise<void> {
     ev.preventDefault();
     account_delete(kill);
   };
+  if (set !== null) {
+    const page = set.ok ? await set.json().catch(() => null) : null;
+    if (page === null) {
+      $("#account .owned").innerHTML = `<p class="sub">Could not read the server's settings. Try again in a moment.</p>`;
+      return;
+    }
+    settings_draw(page);
+  }
 }
 
 async function signout(): Promise<void> {
@@ -1004,6 +1023,126 @@ async function account_delete(kill: HTMLFormElement): Promise<void> {
     return;
   }
   kill.querySelector(".why")!.textContent = out.error;
+}
+
+function settings_draw(page: any): void {
+  $("#account .owned").innerHTML = Html.settings_html(page);
+  const form = $<HTMLFormElement>("#account form.settings");
+  const rows = new Map<string, any>(page.settings.map((r: any) => [r.key, r]));
+  const unset = new Set<string>();
+  // a list's items: its boxes checked, or (not shown) its value
+  const listed = (key: string) => {
+    const boxes = [...form.querySelectorAll<HTMLInputElement>(`input[name="${key}"]`)];
+    return boxes.length === 0 ? Html.list(rows.get(key).value) : boxes.filter((b) => b.checked).map((b) => b.value);
+  };
+  // the models of the vendors checked shown, each pick's four lists of
+  // what they offer, a vendor checked without a key warned of
+  const picks = () => {
+    const vendors = listed("vendors");
+    form.querySelectorAll<HTMLElement>(".opt[data-vendor]:not([data-vendor=''])").forEach((o) => (o.hidden = !vendors.includes(o.dataset.vendor!)));
+    for (const key of Html.PICKS) {
+      const value = form.querySelector<HTMLInputElement>(`input[name="${key}"]`);
+      const four = value?.parentElement!.querySelector<HTMLElement>(".four");
+      if (value && four) {
+        const focus = (document.activeElement as HTMLSelectElement | null)?.name;
+        four.innerHTML = Html.picks_html(key, vendors, listed("models"), value.value, key === "agents" ? "The chat's pick" : null);
+        four.querySelector<HTMLSelectElement>(`select[name="${focus}"]`)?.focus();
+      }
+    }
+    const keyless = vendors.filter((v) => {
+      const name = Html.VENDOR_KEY[v];
+      const key = page.keys.find((k: any) => k.name === name);
+      const typed = form.querySelector<HTMLInputElement>(`[name="key.${name}"]`)?.value.trim() ?? "";
+      return key !== undefined && (key.from === "default" || unset.has("key." + name)) && typed === "";
+    });
+    const warn = form.querySelector(".warn");
+    if (warn !== null) {
+      warn.textContent = keyless.length === 0 ? "" : keyless.join(" and ") + (keyless.length === 1 ? " has" : " have") + " no key set: its calls will fail till one is.";
+    }
+  };
+  form.oninput = (ev) => {
+    const el = (ev.target as HTMLElement).closest<HTMLElement>(".set");
+    if (el === null) {
+      return;
+    }
+    unset.delete(el.dataset.key!);
+    el.classList.remove("unset");
+    el.querySelector(".err")!.textContent = "";
+    const value = el.querySelector<HTMLInputElement>("input[type=hidden]");
+    if (value !== null) {
+      value.value = Html.pick_mend([...el.querySelectorAll("select")].map((s) => s.value), listed("models"));
+    }
+    picks();
+  };
+  form.onclick = (ev) => {
+    const btn = (ev.target as HTMLElement).closest<HTMLButtonElement>(".reset");
+    if (btn === null) {
+      return;
+    }
+    const el = btn.closest<HTMLElement>(".set")!;
+    const key = el.dataset.key!;
+    const r = rows.get(key);
+    el.querySelectorAll<HTMLInputElement>("input[type=checkbox]").forEach((b) => (b.checked = Html.list(r.def).includes(b.value)));
+    el.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>("input:not([type=checkbox]), textarea").forEach((i) => (i.value = r?.def ?? ""));
+    picks();
+    unset.add(key);
+    el.classList.add("unset");
+    btn.hidden = true;
+    el.querySelector(".from")!.insertAdjacentText("beforeend", key.startsWith("key.") ? " · removed once saved" : " · the default once saved");
+  };
+  form.onsubmit = (ev) => {
+    ev.preventDefault();
+    settings_save(form, page, unset, listed);
+  };
+  picks();
+}
+
+async function settings_save(form: HTMLFormElement, page: any, unset: Set<string>, listed: (key: string) => string[]): Promise<void> {
+  const set: Record<string, string | null> = {};
+  const keys: Record<string, string | null> = {};
+  for (const r of page.settings) {
+    // one not shown isn't sent
+    if (form.querySelector(`.set[data-key="${r.key}"]`) === null) {
+      continue;
+    }
+    const field = form.querySelector<HTMLInputElement>(`input[name="${r.key}"]`);
+    // a list changed only if its items did (the boxes' order is no
+    // change: Html.list_changed)
+    const now = r.key === "vendors" || r.key === "models" ? Html.list_changed(Html.list(r.value), listed(r.key))?.join(",") ?? r.value : field?.value.trim() ?? r.value;
+    if (unset.has(r.key)) {
+      set[r.key] = null;
+    } else if (now !== r.value) {
+      set[r.key] = now;
+    }
+  }
+  for (const k of page.keys) {
+    const typed = form.querySelector<HTMLInputElement | HTMLTextAreaElement>(`[name="key.${k.name}"]`)?.value.trim() ?? "";
+    if (unset.has("key." + k.name)) {
+      keys[k.name] = null;
+    } else if (typed !== "") {
+      keys[k.name] = typed;
+    }
+  }
+  const why = form.querySelector(".save .why")!;
+  form.querySelectorAll(".err").forEach((e) => (e.textContent = ""));
+  if (Object.keys(set).length === 0 && Object.keys(keys).length === 0) {
+    why.textContent = "Nothing changed.";
+    return;
+  }
+  const go = form.querySelector<HTMLButtonElement>(".go")!;
+  go.disabled = true;
+  why.textContent = "";
+  const out = await View.post("/api/settings", { version: page.version, set, keys });
+  go.disabled = false;
+  if (!out.ok) {
+    const at = out.key === undefined ? null : form.querySelector<HTMLElement>(`.set[data-key="${out.key}"]`);
+    (at?.querySelector(".err") ?? why).textContent = out.error ?? "Could not save.";
+    (at ?? why).scrollIntoView({ block: "center" });
+    return;
+  }
+  const later = (out.saved as string[]).filter((key) => page.settings.find((r: any) => r.key === key)?.apply === "restart");
+  settings_draw(out);
+  toast(later.length === 0 ? "Saved." : "Saved. " + later.join(", ") + " " + (later.length === 1 ? "applies" : "apply") + " once the server restarts.");
 }
 
 // Notes

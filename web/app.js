@@ -675,42 +675,42 @@ function block_parse(lines, i) {
     return [null, i + 1];
   }
   if (FENCE.test(line)) {
-    const end2 = runs((l) => !FENCE.test(l));
+    const end = runs((l) => !FENCE.test(l));
     const k = line.trim().slice(3).trim();
-    const x2 = lines.slice(i + 1, end2).join(`
+    const x = lines.slice(i + 1, end).join(`
 `);
-    return [{ $: "Code", k, x: x2 }, end2 + 1];
+    return [{ $: "Code", k, x }, end + 1];
   }
   if (head !== null) {
-    const x2 = span_parse(head[2]);
-    return [{ $: "Head", k: head[1].length, x: x2 }, i + 1];
+    const x = span_parse(head[2]);
+    return [{ $: "Head", k: head[1].length, x }, i + 1];
   }
   if (RULE.test(line)) {
     return [{ $: "Rule" }, i + 1];
   }
   if (QUOT.test(line)) {
-    const end2 = runs((l) => QUOT.test(l));
-    const body = lines.slice(i, end2).map((l) => l.replace(QUOT, ""));
+    const end = runs((l) => QUOT.test(l));
+    const body = lines.slice(i, end).map((l) => l.replace(QUOT, ""));
     return [{ $: "Quot", x: md_parse(body.join(`
-`)) }, end2];
+`)) }, end];
   }
   if (numbered !== null) {
     const item = (l) => list_numbered(l) === numbered;
-    const end2 = runs((l) => item(l) || MORE.test(l));
+    const end = runs((l) => item(l) || MORE.test(l));
     const items = [];
-    for (const l of lines.slice(i, end2)) {
+    for (const l of lines.slice(i, end)) {
       if (item(l)) {
         items.push(l.replace(LIST, ""));
       } else {
         items[items.length - 1] += " " + l.trim();
       }
     }
-    return [{ $: "List", k: numbered, x: items.map(span_parse) }, end2];
+    return [{ $: "List", k: numbered, x: items.map(span_parse) }, end];
   }
   if (ROW.test(line) && BAR.test(lines[i + 1] ?? "")) {
-    const end2 = lines_run(lines, i + 1, (l) => ROW.test(l));
-    const rows = [line, ...lines.slice(i + 2, end2)];
-    return [{ $: "Tabl", x: rows.map(row_cells) }, end2];
+    const end = lines_run(lines, i + 1, (l) => ROW.test(l));
+    const rows = [line, ...lines.slice(i + 2, end)];
+    return [{ $: "Tabl", x: rows.map(row_cells) }, end];
   }
   const end = runs((l, j) => l.trim() !== "" && !block_starts(lines, j));
   const x = lines.slice(i, end).map(span_parse);
@@ -737,6 +737,7 @@ function row_cells(line) {
 }
 
 // Pick.ts
+var VENDORS = ["claude-api", "openai-api"];
 var OPUS = { label: "opus-5.5", id: "claude-opus-5-5", speeds: ["slow", "fast"] };
 var SONNET = { label: "sonnet-5.5", id: "claude-sonnet-5-5", speeds: ["slow"] };
 var HAIKU = { label: "haiku-5.5", id: "claude-haiku-5-5", speeds: ["slow"] };
@@ -753,25 +754,25 @@ var EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 var SPEEDS = ["slow", "fast", "ultrafast"];
 var LABELS = [...new Set(Object.values(MODELS).flat().map((m) => m.label))];
 var Pick;
-((Pick) => {
-  function model(vendor, label2) {
-    return MODELS[vendor].find((m) => m.label === label2);
+((Pick2) => {
+  function model(vendor, label) {
+    return MODELS[vendor].find((m) => m.label === label);
   }
-  Pick.model = model;
-  function on(pick, vendor, model2) {
+  Pick2.model = model;
+  function on(pick, vendor, model) {
     const below = SPEEDS.slice(0, SPEEDS.indexOf(pick.speed) + 1);
-    const speed = below.filter((s) => model2.speeds.includes(s)).pop() ?? "slow";
-    return { ...pick, vendor, model: model2.label, speed };
+    const speed = below.filter((s) => model.speeds.includes(s)).pop() ?? "slow";
+    return { ...pick, vendor, model: model.label, speed };
   }
-  Pick.on = on;
+  Pick2.on = on;
   function models(vendors, labels) {
     return vendors.flatMap((v) => MODELS[v].filter((m) => labels.includes(m.label)).map((m) => [v, m]));
   }
-  Pick.models = models;
-  function options(pick, move2, { vendors, models: models2 }) {
+  Pick2.models = models;
+  function options(pick, move, { vendors, models }) {
     const speeds = Pick.model(pick.vendor, pick.model)?.speeds ?? [];
-    const all = (vs) => Pick.models(vs, models2).map(([v, m]) => [m.label, Pick.on(pick, v, m)]);
-    switch (move2) {
+    const all = (vs) => Pick.models(vs, models).map(([v, m]) => [m.label, Pick.on(pick, v, m)]);
+    switch (move) {
       case "next":
       case "prev":
       case "model": {
@@ -787,40 +788,40 @@ var Pick;
       }
     }
   }
-  Pick.options = options;
-  function move(pick, move2, offer, to) {
-    const list = Pick.options(pick, move2, offer);
+  Pick2.options = options;
+  function move(pick, move, offer, to) {
+    const list = Pick.options(pick, move, offer);
     const n = list.length;
     const at = list.findIndex(([, p]) => Pick.label(p) === Pick.label(pick));
-    const d = move2 === "prev" || move2 === "down" ? -1 : 1;
-    const ends = move2 === "up" || move2 === "down";
+    const d = move === "prev" || move === "down" ? -1 : 1;
+    const ends = move === "up" || move === "down";
     const next = ends ? Math.max(0, Math.min(n - 1, at + d)) : (at + d + n) % n;
     const like = list.filter(([part]) => part.toLowerCase().includes(String(to).toLowerCase()));
     const hit = to === undefined ? list[next] : list.find(([part]) => part === to) ?? (like.length === 1 ? like[0] : undefined);
     return hit === undefined ? null : hit[1];
   }
-  Pick.move = move;
+  Pick2.move = move;
   function label(pick) {
     return [pick.vendor, pick.model, pick.effort, pick.speed].join(":");
   }
-  Pick.label = label;
+  Pick2.label = label;
   function ask(pick) {
-    const model2 = Pick.model(pick.vendor, pick.model);
-    return { ...pick, model: model2?.id ?? pick.model };
+    const model = Pick.model(pick.vendor, pick.model);
+    return { ...pick, model: model?.id ?? pick.model };
   }
-  Pick.ask = ask;
+  Pick2.ask = ask;
   function read(x, offer) {
-    const model2 = offer.vendors.includes(x.vendor) && offer.models.includes(x.model) ? Pick.model(x.vendor, x.model) : undefined;
-    if (model2 === undefined || !EFFORTS.includes(x.effort) || !model2.speeds.includes(x.speed)) {
+    const model = offer.vendors.includes(x.vendor) && offer.models.includes(x.model) ? Pick.model(x.vendor, x.model) : undefined;
+    if (model === undefined || !EFFORTS.includes(x.effort) || !model.speeds.includes(x.speed)) {
       return null;
     }
     return { vendor: x.vendor, model: x.model, effort: x.effort, speed: x.speed };
   }
-  Pick.read = read;
+  Pick2.read = read;
   function load(saved, offer, def) {
     return Pick.read(saved ?? def, offer) ?? def;
   }
-  Pick.load = load;
+  Pick2.load = load;
 })(Pick ||= {});
 
 // Price.ts
@@ -842,31 +843,31 @@ var MINUTES = {
 };
 var SPEEDS2 = { slow: 1, fast: 2, ultrafast: 6 };
 var Price;
-((Price) => {
+((Price2) => {
   function usage(speed) {
     return { input: 0, write: 0, read: 0, output: 0, searches: 0, seconds: 0, speed };
   }
-  Price.usage = usage;
+  Price2.usage = usage;
   function rate(model) {
     return RATES[model];
   }
-  Price.rate = rate;
+  Price2.rate = rate;
   function times(speed) {
     return SPEEDS2[speed] ?? 1;
   }
-  Price.times = times;
+  Price2.times = times;
   function cost(model, use) {
     const long = use.input + use.write + use.read > PROMPT ? LONG[model] : undefined;
-    const rate2 = long ?? RATES[model];
+    const rate = long ?? RATES[model];
     const minute = MINUTES[model];
-    if (rate2 === undefined && minute === undefined) {
+    if (rate === undefined && minute === undefined) {
       throw new Error("no price for " + model);
     }
-    const tokens = rate2 === undefined ? 0 : use.input * rate2.input + use.write * rate2.write + use.read * rate2.read + use.output * rate2.output;
+    const tokens = rate === undefined ? 0 : use.input * rate.input + use.write * rate.write + use.read * rate.read + use.output * rate.output;
     const audio = minute === undefined ? 0 : use.seconds / 60 * minute * 1e6;
     return Math.ceil(tokens * Price.times(use.speed) + use.searches * SEARCH * 1e6 + audio);
   }
-  Price.cost = cost;
+  Price2.cost = cost;
 })(Price ||= {});
 
 // View.ts
@@ -1282,8 +1283,8 @@ function part_rows(v, id, n, t, talk) {
   }
   const text = n === 1 ? "fold" : GLYPH.open + " " + n + "x · fold";
   if (n > 1) {
-    const rows2 = [...part_rows(v, id, half, t, talk), ...part_rows(v, id + half, half, t, talk)];
-    return [{ $: "Box", id, n, text, rows: rows2 }];
+    const rows = [...part_rows(v, id, half, t, talk), ...part_rows(v, id + half, half, t, talk)];
+    return [{ $: "Box", id, n, text, rows }];
   }
   const rows = entry === undefined ? [] : whole_rows(id, entry);
   return [{ $: "Box", id, n, text, rows }];
@@ -1460,7 +1461,7 @@ function fine_html(app) {
   const fee = app ? "Paid at the App Store's price." : "+10% platform fee (min $0.80).";
   return `<p class="fine">${fee} Buying accepts the <a href="/terms.html" target="_blank">terms</a>.</p>`;
 }
-function account_html(a, app) {
+function account_html(a, app, owner) {
   const tops = a.topups ?? [];
   const days = account_days(a);
   const balance = a.credits === null ? "" : section_html("Balance", `<p class="big">${usd_show(a.credits)}</p>` + credit_html(app));
@@ -1477,7 +1478,120 @@ function account_html(a, app) {
   ];
   const account = section_html("Sign-in and data", acts.join("") + kill);
   const links = a.bills ? `<p class="foot"><a href="/pricing" target="_blank">Prices</a> · <a href="/terms.html" target="_blank">Terms</a> · <a href="/privacy.html" target="_blank">Privacy</a> · <a href="mailto:contact@higherorderco.com">Help</a></p>` : "";
-  return `<a class="back" href="/" data-go="/">← Chat</a><h1>Account</h1>` + money + account + links;
+  const owned = owner ? `<div class="owned"></div>` : "";
+  return `<a class="back" href="/" data-go="/">← Chat</a><h1>Settings</h1>` + money + account + owned + links;
+}
+var SETTING = {
+  vendors: ["Vendors", "Whose models the server offers."],
+  models: ["Models", "The models offered, of those vendors."],
+  pick: ["Default model", "What a chat runs on until it picks another."],
+  compactor: ["Compactor model", "What writes the memory's summaries."],
+  agents: ["Subagent model", "What subagents run on."],
+  site: ["Site", "The server's address, for sign-in links."],
+  apple: ["iOS App ID", "The app's team and bundle ID, whose sign-in links it opens."],
+  apns: ["APNs key ID", "The ID of the key the app's pushes are signed with."]
+};
+var KEY = {
+  anthropic: ["Anthropic key", "For claude-api's models."],
+  openai: ["OpenAI key", "For openai-api's models and dictation."],
+  resend: ["Resend key", "Emails sign-in links (none: the server prints them)."],
+  apns: ["APNs key", "The .p8 key the iOS app's pushes are signed with."]
+};
+var VENDOR_KEY = { "claude-api": "anthropic", "openai-api": "openai" };
+var PICKS = ["pick", "compactor", "agents"];
+var GROUPS = [
+  ["Models", ["vendors", "models", "pick", "compactor", "agents"]],
+  ["Server", ["site", "apple", "apns"]]
+];
+function settings_html(page) {
+  const rows = new Map(page.settings.filter((r) => r.web && r.from !== "env").map((r) => [r.key, r]));
+  const group = ([title, keys]) => {
+    const shown = keys.flatMap((k) => rows.get(k) ?? []);
+    return shown.length === 0 ? "" : section_html(title, shown.map(setting_html).join(""));
+  };
+  const shown = page.keys.filter((k) => k.from !== "env");
+  const keys = shown.length === 0 ? "" : section_html("Keys", `<p class="sub">Kept in keys.json in the server's folder, readable by the server's user only, and never shown again, only their last characters.</p>` + shown.map(key_html).join(""));
+  const error = page.error === null ? "" : `<p class="why bad">${esc(page.error)}</p>`;
+  const save = `<div class="save"><p class="why"></p><button class="chip go"${page.error === null ? "" : " disabled"}>Save</button></div>`;
+  const head = `<p class="sub">You own this server: what follows is its settings, in config.json in its folder, seen by you only.</p>`;
+  return head + error + `<form class="settings" autocomplete="off">` + group(GROUPS[0]) + keys + group(GROUPS[1]) + save + `</form>`;
+}
+function setting_html(r) {
+  const [name, about] = SETTING[r.key] ?? [r.key, ""];
+  const id = "set-" + r.key + (PICKS.includes(r.key) ? "-vendor" : "");
+  const label = `<label for="${id}">${esc(name)}<small>${esc(about)} <code>${esc(r.key)}</code></small></label>`;
+  return `<div class="set" data-key="${esc(r.key)}">${label}<div class="field">${control_html(r)}</div>${from_html(r)}<p class="err"></p></div>`;
+}
+function control_html(r) {
+  switch (r.key) {
+    case "vendors": {
+      return checks_html("vendors", VENDORS, list(r.value), () => "") + `<p class="warn"></p>`;
+    }
+    case "models": {
+      const of = new Map(Pick.models(VENDORS, LABELS).map(([vendor, model]) => [model.label, vendor]));
+      return checks_html("models", LABELS, list(r.value), (x) => of.get(x) ?? "");
+    }
+    case "pick":
+    case "compactor":
+    case "agents": {
+      return `<input type="hidden" name="${r.key}" value="${esc(r.value)}"><div class="four"></div>`;
+    }
+  }
+  return `<input id="set-${r.key}" name="${r.key}" value="${esc(r.value)}" placeholder="${esc(r.def)}" spellcheck="false" autocapitalize="off">`;
+}
+function list(text) {
+  return text.split(",").map((x) => x.trim()).filter((x) => x !== "");
+}
+function list_changed(was, now) {
+  const same = was.length === now.length && was.every((x) => now.includes(x)) && now.every((x) => was.includes(x));
+  return same ? null : [...was.filter((x) => now.includes(x)), ...now.filter((x) => !was.includes(x))];
+}
+function checks_html(name, all, on, vendor) {
+  const box = (x) => `<label class="opt" data-vendor="${esc(vendor(x))}"><input type="checkbox" name="${name}" value="${esc(x)}"${on.includes(x) ? " checked" : ""}> ${esc(x)}</label>`;
+  const odd = on.filter((x) => !all.includes(x));
+  return `<div class="opts">${all.map(box).join("")}${odd.map(box).join("")}</div>`;
+}
+function from_html(r) {
+  const from = r.from === "file" ? "From config.json" : "Default";
+  const apply = r.apply === "now" ? "applies at once" : "applies on a restart";
+  const running = r.running === null ? "" : ` · running on <code>${esc(r.running === "" ? "(none)" : r.running)}</code> till then`;
+  const reset = r.from === "file" ? ` <button type="button" class="reset">Use the default</button>` : "";
+  return `<p class="from">${from} · ${apply}${running}${reset}</p>`;
+}
+function key_html(k) {
+  const [name, about] = KEY[k.name] ?? [k.name, ""];
+  const id = "set-key-" + k.name;
+  const field = k.name === "apns" ? `<textarea id="${id}" name="key.${k.name}" rows="3" placeholder="Paste a new key to set it" spellcheck="false"></textarea>` : `<input id="${id}" type="password" name="key.${k.name}" autocomplete="new-password" placeholder="Paste a new key to set it" spellcheck="false" autocapitalize="off">`;
+  const tail = k.tail === "" ? "" : `, ending in <code>${esc(k.tail)}</code>`;
+  const from = k.from === "file" ? `Set${tail}, in keys.json` : "Not set";
+  const reset = k.from === "file" ? ` <button type="button" class="reset">Remove</button>` : "";
+  const label = `<label for="${id}">${esc(name)}<small>${esc(about)} <code>${esc(k.env)}</code></small></label>`;
+  return `<div class="set key" data-key="key.${esc(k.name)}">${label}<div class="field">${field}</div><p class="from">${from}${reset}</p><p class="err"></p></div>`;
+}
+function picks_html(key, vendors, models, value, none) {
+  const [vendor = "", model = "", effort = "", speed = ""] = value === "" ? [] : value.split(":");
+  const known = VENDORS.includes(vendor);
+  const offered = VENDORS.filter((v) => vendors.includes(v));
+  const labels = known ? Pick.models([vendor], models).map(([, m]) => m.label) : [];
+  const speeds = known ? Pick.model(vendor, model)?.speeds ?? [] : [];
+  const select = (part, name, all, on, first) => {
+    const opts = [...first === null ? [] : [["", first]], ...all.includes(on) || on === "" && first !== null ? [] : [[on, on + " (not offered)"]], ...all.map((x) => [x, x])];
+    const items = opts.map(([v, text]) => `<option value="${esc(v)}"${v === on ? " selected" : ""}>${esc(text)}</option>`).join("");
+    return `<select id="set-${key}-${part}" name="${key}.${part}" aria-label="${name}">${items}</select>`;
+  };
+  const head = select("vendor", "Vendor", offered, vendor, none);
+  return vendor === "" ? head : head + select("model", "Model", labels, model, null) + select("effort", "Effort", EFFORTS, effort, null) + select("speed", "Speed", speeds, speed, null);
+}
+function pick_mend(parts, models) {
+  const [vendor = "", model = "", effort = "", speed = ""] = parts;
+  if (!VENDORS.includes(vendor)) {
+    return vendor === "" ? "" : parts.join(":");
+  }
+  const m = Pick.model(vendor, model) ?? Pick.models([vendor], models)[0]?.[1];
+  if (m === undefined) {
+    return parts.join(":");
+  }
+  return [vendor, m.label, effort || "medium", m.speeds.includes(speed) ? speed : m.speeds[0]].join(":");
 }
 function section_html(title, body) {
   return `<section><h2>${esc(title)}</h2>${body}</section>`;
@@ -1587,6 +1701,7 @@ var BACK = $("#import [name=back]");
 var P = {
   id: "",
   guest: false,
+  owner: false,
   imgs: [],
   rec: null,
   shown: "",
@@ -1609,7 +1724,7 @@ function kept(fact) {
 async function boot() {
   document.head.insertAdjacentHTML("beforeend", `<style>${theme_css()}</style>`);
   const q = new URLSearchParams(location.search);
-  history.replaceState(null, "", location.pathname === "/account" ? "/account" : "/");
+  history.replaceState(null, "", PAGES.includes(location.pathname) ? "/settings" : "/");
   if (q.has("terminal")) {
     solo("Your terminal is signed in.", "You can close this tab and go back to it.");
     return;
@@ -1633,6 +1748,7 @@ async function boot() {
     return;
   }
   P.id = me.id;
+  P.owner = me.owner === true;
   signed();
   route();
   v.bills = me.bills;
@@ -1651,6 +1767,7 @@ async function boot_me() {
     await new Promise((ok) => setTimeout(ok, RETRY));
   }
 }
+var PAGES = ["/settings", "/account"];
 function solo(title, sub) {
   document.body.className = "solo";
   document.body.innerHTML = `<main><h1>${title}</h1><p class="sub">${sub}</p></main>`;
@@ -1883,8 +2000,8 @@ function meter(stream, rec) {
   requestAnimationFrame(frame);
 }
 function words(audio) {
-  const act2 = { $: "voice", type: audio.type, body: () => audio };
-  link_send(v, act2, heard);
+  const act = { $: "voice", type: audio.type, body: () => audio };
+  link_send(v, act, heard);
   draw(false);
 }
 function heard(out) {
@@ -2287,7 +2404,7 @@ function go(path) {
   route();
 }
 function route() {
-  const page = location.pathname === "/account";
+  const page = PAGES.includes(location.pathname);
   $("#log").hidden = page;
   document.body.classList.toggle("account", page);
   $("#account").hidden = !page;
@@ -2299,13 +2416,13 @@ function route() {
 }
 async function account() {
   const el = $("#account");
-  const res = await fetch("/api/account").catch(() => null);
+  const [res, set] = await Promise.all([fetch("/api/account").catch(() => null), P.owner ? fetch("/api/settings").catch(() => null) : null]);
   const a = res !== null && res.ok ? await res.json() : null;
   if (a === null) {
     el.innerHTML = `<p class="sub">Could not read your account. Try again in a moment.</p>`;
     return;
   }
-  el.innerHTML = account_html(a, APP !== null);
+  el.innerHTML = account_html(a, APP !== null, P.owner);
   const kill = $("#account .kill");
   const del = $("#account .del");
   const name = kill.querySelector("input");
@@ -2324,6 +2441,14 @@ async function account() {
     ev.preventDefault();
     account_delete(kill);
   };
+  if (set !== null) {
+    const page = set.ok ? await set.json().catch(() => null) : null;
+    if (page === null) {
+      $("#account .owned").innerHTML = `<p class="sub">Could not read the server's settings. Try again in a moment.</p>`;
+      return;
+    }
+    settings_draw(page);
+  }
 }
 async function signout() {
   await post("/api/logout", {});
@@ -2337,6 +2462,118 @@ async function account_delete(kill) {
     return;
   }
   kill.querySelector(".why").textContent = out.error;
+}
+function settings_draw(page) {
+  $("#account .owned").innerHTML = settings_html(page);
+  const form = $("#account form.settings");
+  const rows = new Map(page.settings.map((r) => [r.key, r]));
+  const unset = new Set;
+  const listed = (key) => {
+    const boxes = [...form.querySelectorAll(`input[name="${key}"]`)];
+    return boxes.length === 0 ? list(rows.get(key).value) : boxes.filter((b) => b.checked).map((b) => b.value);
+  };
+  const picks = () => {
+    const vendors = listed("vendors");
+    form.querySelectorAll(".opt[data-vendor]:not([data-vendor=''])").forEach((o) => o.hidden = !vendors.includes(o.dataset.vendor));
+    for (const key of PICKS) {
+      const value = form.querySelector(`input[name="${key}"]`);
+      const four = value?.parentElement.querySelector(".four");
+      if (value && four) {
+        const focus = document.activeElement?.name;
+        four.innerHTML = picks_html(key, vendors, listed("models"), value.value, key === "agents" ? "The chat's pick" : null);
+        four.querySelector(`select[name="${focus}"]`)?.focus();
+      }
+    }
+    const keyless = vendors.filter((v) => {
+      const name = VENDOR_KEY[v];
+      const key = page.keys.find((k) => k.name === name);
+      const typed = form.querySelector(`[name="key.${name}"]`)?.value.trim() ?? "";
+      return key !== undefined && (key.from === "default" || unset.has("key." + name)) && typed === "";
+    });
+    const warn = form.querySelector(".warn");
+    if (warn !== null) {
+      warn.textContent = keyless.length === 0 ? "" : keyless.join(" and ") + (keyless.length === 1 ? " has" : " have") + " no key set: its calls will fail till one is.";
+    }
+  };
+  form.oninput = (ev) => {
+    const el = ev.target.closest(".set");
+    if (el === null) {
+      return;
+    }
+    unset.delete(el.dataset.key);
+    el.classList.remove("unset");
+    el.querySelector(".err").textContent = "";
+    const value = el.querySelector("input[type=hidden]");
+    if (value !== null) {
+      value.value = pick_mend([...el.querySelectorAll("select")].map((s) => s.value), listed("models"));
+    }
+    picks();
+  };
+  form.onclick = (ev) => {
+    const btn = ev.target.closest(".reset");
+    if (btn === null) {
+      return;
+    }
+    const el = btn.closest(".set");
+    const key = el.dataset.key;
+    const r = rows.get(key);
+    el.querySelectorAll("input[type=checkbox]").forEach((b) => b.checked = list(r.def).includes(b.value));
+    el.querySelectorAll("input:not([type=checkbox]), textarea").forEach((i) => i.value = r?.def ?? "");
+    picks();
+    unset.add(key);
+    el.classList.add("unset");
+    btn.hidden = true;
+    el.querySelector(".from").insertAdjacentText("beforeend", key.startsWith("key.") ? " · removed once saved" : " · the default once saved");
+  };
+  form.onsubmit = (ev) => {
+    ev.preventDefault();
+    settings_save(form, page, unset, listed);
+  };
+  picks();
+}
+async function settings_save(form, page, unset, listed) {
+  const set = {};
+  const keys = {};
+  for (const r of page.settings) {
+    if (form.querySelector(`.set[data-key="${r.key}"]`) === null) {
+      continue;
+    }
+    const field = form.querySelector(`input[name="${r.key}"]`);
+    const now = r.key === "vendors" || r.key === "models" ? list_changed(list(r.value), listed(r.key))?.join(",") ?? r.value : field?.value.trim() ?? r.value;
+    if (unset.has(r.key)) {
+      set[r.key] = null;
+    } else if (now !== r.value) {
+      set[r.key] = now;
+    }
+  }
+  for (const k of page.keys) {
+    const typed = form.querySelector(`[name="key.${k.name}"]`)?.value.trim() ?? "";
+    if (unset.has("key." + k.name)) {
+      keys[k.name] = null;
+    } else if (typed !== "") {
+      keys[k.name] = typed;
+    }
+  }
+  const why = form.querySelector(".save .why");
+  form.querySelectorAll(".err").forEach((e) => e.textContent = "");
+  if (Object.keys(set).length === 0 && Object.keys(keys).length === 0) {
+    why.textContent = "Nothing changed.";
+    return;
+  }
+  const go = form.querySelector(".go");
+  go.disabled = true;
+  why.textContent = "";
+  const out = await post("/api/settings", { version: page.version, set, keys });
+  go.disabled = false;
+  if (!out.ok) {
+    const at = out.key === undefined ? null : form.querySelector(`.set[data-key="${out.key}"]`);
+    (at?.querySelector(".err") ?? why).textContent = out.error ?? "Could not save.";
+    (at ?? why).scrollIntoView({ block: "center" });
+    return;
+  }
+  const later = out.saved.filter((key) => page.settings.find((r) => r.key === key)?.apply === "restart");
+  settings_draw(out);
+  toast(later.length === 0 ? "Saved." : "Saved. " + later.join(", ") + " " + (later.length === 1 ? "applies" : "apply") + " once the server restarts.");
 }
 async function topup2(usd) {
   if (APP !== null) {

@@ -1,13 +1,16 @@
 // Html
 // ====
 // What View.ts draws and Md.ts's tokens, as HTML, every text escaped, one
-// element per row, knob or tab; and the account page's parts. A click's
+// element per row, knob or tab; and the settings page's parts. A click's
 // effect is in the markup: `data-act`, the View.Act it makes;
 // `data-copy`, what Copy copies; `data-usd`, the credit it buys
 // (main.ts), so `credit_html` works wherever it is put.
 
+import type { Vendor } from "../../AskAI.ts";
 import * as Call from "../../Call.ts";
 import * as Md from "../../Md.ts";
+import { EFFORTS, LABELS, Pick, VENDORS } from "../../Pick.ts";
+import type { Key, Page, Row } from "../../Settings.ts";
 import * as Theme from "../../Theme.ts";
 import * as View from "../../View.ts";
 
@@ -135,10 +138,11 @@ export function fine_html(app: boolean): string {
   return `<p class="fine">${fee} Buying accepts the <a href="/terms.html" target="_blank">terms</a>.</p>`;
 }
 
-// the account page (/account): where the server bills, the balance and
-// credit to add, the use by day and the purchases; then the account's
-// own acts; deleting asks first, in place (main.ts)
-export function account_html(a: View.Account, app: boolean): string {
+// the settings page (/settings, or /account): where the server bills,
+// the balance and credit to add, the use by day and the purchases; then
+// the account's own acts; deleting asks first, in place (main.ts); then,
+// for the server's owner, its settings (main.ts fills .owned)
+export function account_html(a: View.Account, app: boolean, owner: boolean): string {
   const tops    = a.topups ?? [];
   const days    = View.account_days(a);
   const balance = a.credits === null ? "" : section_html("Balance", `<p class="big">${View.usd_show(a.credits)}</p>` + credit_html(app));
@@ -155,10 +159,168 @@ export function account_html(a: View.Account, app: boolean): string {
   ];
   const account = section_html("Sign-in and data", acts.join("") + kill);
   const links   = a.bills ? `<p class="foot"><a href="/pricing" target="_blank">Prices</a> · <a href="/terms.html" target="_blank">Terms</a> · <a href="/privacy.html" target="_blank">Privacy</a> · <a href="mailto:contact@higherorderco.com">Help</a></p>` : "";
-  return `<a class="back" href="/" data-go="/">← Chat</a><h1>Account</h1>` + money + account + links;
+  const owned   = owner ? `<div class="owned"></div>` : "";
+  return `<a class="back" href="/" data-go="/">← Chat</a><h1>Settings</h1>` + money + account + owned + links;
 }
 
-// a section of the account page: its title, then its markup
+// Settings
+// ========
+// The owner's part of the settings page (the server's settings:
+// Settings.ts), at its bottom: a row a setting or a key the page may
+// change, each its control (named by its key; a key's "key.<name>"),
+// where its value comes from and when a change applies, a button back
+// to the default (a key: out) if config.json sets it, and a place for
+// why a save was refused. One the page may not change (set by the
+// environment, or a server path or command) isn't shown. main.ts reads
+// the form and fills the picks' lists (picks_html).
+
+// what each setting is, as the page says it: its name, a line about it
+const SETTING: Record<string, [string, string]> = {
+  vendors   : ["Vendors", "Whose models the server offers."],
+  models    : ["Models", "The models offered, of those vendors."],
+  pick      : ["Default model", "What a chat runs on until it picks another."],
+  compactor : ["Compactor model", "What writes the memory's summaries."],
+  agents    : ["Subagent model", "What subagents run on."],
+  site      : ["Site", "The server's address, for sign-in links."],
+  apple     : ["iOS App ID", "The app's team and bundle ID, whose sign-in links it opens."],
+  apns      : ["APNs key ID", "The ID of the key the app's pushes are signed with."],
+};
+
+const KEY: Record<string, [string, string]> = {
+  anthropic : ["Anthropic key", "For claude-api's models."],
+  openai    : ["OpenAI key", "For openai-api's models and dictation."],
+  resend    : ["Resend key", "Emails sign-in links (none: the server prints them)."],
+  apns      : ["APNs key", "The .p8 key the iOS app's pushes are signed with."],
+};
+
+// each vendor's key
+export const VENDOR_KEY: Record<string, string> = { "claude-api": "anthropic", "openai-api": "openai" };
+
+// the settings whose value is a pick (four lists: picks_html)
+export const PICKS = ["pick", "compactor", "agents"];
+
+const GROUPS: Array<[string, string[]]> = [
+  ["Models", ["vendors", "models", "pick", "compactor", "agents"]],
+  ["Server", ["site", "apple", "apns"]],
+];
+
+export function settings_html(page: Page): string {
+  const rows = new Map(page.settings.filter((r) => r.web && r.from !== "env").map((r) => [r.key, r]));
+  const group = ([title, keys]: [string, string[]]) => {
+    const shown = keys.flatMap((k) => rows.get(k) ?? []);
+    return shown.length === 0 ? "" : section_html(title, shown.map(setting_html).join(""));
+  };
+  const shown = page.keys.filter((k) => k.from !== "env");
+  const keys = shown.length === 0 ? "" : section_html("Keys", `<p class="sub">Kept in keys.json in the server's folder, readable by the server's user only, and never shown again, only their last characters.</p>` + shown.map(key_html).join(""));
+  const error = page.error === null ? "" : `<p class="why bad">${esc(page.error)}</p>`;
+  const save = `<div class="save"><p class="why"></p><button class="chip go"${page.error === null ? "" : " disabled"}>Save</button></div>`;
+  const head = `<p class="sub">You own this server: what follows is its settings, in config.json in its folder, seen by you only.</p>`;
+  return head + error + `<form class="settings" autocomplete="off">` + group(GROUPS[0]) + keys + group(GROUPS[1]) + save + `</form>`;
+}
+
+function setting_html(r: Row): string {
+  const [name, about] = SETTING[r.key] ?? [r.key, ""];
+  const id = "set-" + r.key + (PICKS.includes(r.key) ? "-vendor" : "");
+  const label = `<label for="${id}">${esc(name)}<small>${esc(about)} <code>${esc(r.key)}</code></small></label>`;
+  return `<div class="set" data-key="${esc(r.key)}">${label}<div class="field">${control_html(r)}</div>${from_html(r)}<p class="err"></p></div>`;
+}
+
+function control_html(r: Row): string {
+  switch (r.key) {
+    case "vendors": {
+      return checks_html("vendors", VENDORS, list(r.value), () => "") + `<p class="warn"></p>`;
+    }
+    case "models": {
+      const of = new Map(Pick.models(VENDORS, LABELS).map(([vendor, model]) => [model.label, vendor as string]));
+      return checks_html("models", LABELS, list(r.value), (x) => of.get(x) ?? "");
+    }
+    case "pick":
+    case "compactor":
+    case "agents": {
+      return `<input type="hidden" name="${r.key}" value="${esc(r.value)}"><div class="four"></div>`;
+    }
+  }
+  return `<input id="set-${r.key}" name="${r.key}" value="${esc(r.value)}" placeholder="${esc(r.def)}" spellcheck="false" autocapitalize="off">`;
+}
+
+// a list setting's items
+export function list(text: string): string[] {
+  return text.split(",").map((x) => x.trim()).filter((x) => x !== "");
+}
+
+// a list as saved (`was`) and its items checked now (`now`, in the boxes'
+// order): null if the same items (in any order: no change); else the
+// items kept, in their order, then those added, in the boxes'
+export function list_changed(was: string[], now: string[]): string[] | null {
+  const same = was.length === now.length && was.every((x) => now.includes(x)) && now.every((x) => was.includes(x));
+  return same ? null : [...was.filter((x) => now.includes(x)), ...now.filter((x) => !was.includes(x))];
+}
+
+// a box per item; a model's names its vendor (`data-vendor`: main.ts
+// shows only the vendors' checked)
+function checks_html(name: string, all: string[], on: string[], vendor: (x: string) => string): string {
+  const box = (x: string) => `<label class="opt" data-vendor="${esc(vendor(x))}"><input type="checkbox" name="${name}" value="${esc(x)}"${on.includes(x) ? " checked" : ""}> ${esc(x)}</label>`;
+  const odd = on.filter((x) => !all.includes(x));
+  return `<div class="opts">${all.map(box).join("")}${odd.map(box).join("")}</div>`;
+}
+
+// where a value comes from, when a change applies, and the button back
+// to the default
+function from_html(r: Row): string {
+  const from = r.from === "file" ? "From config.json" : "Default";
+  const apply = r.apply === "now" ? "applies at once" : "applies on a restart";
+  const running = r.running === null ? "" : ` · running on <code>${esc(r.running === "" ? "(none)" : r.running)}</code> till then`;
+  const reset = r.from === "file" ? ` <button type="button" class="reset">Use the default</button>` : "";
+  return `<p class="from">${from} · ${apply}${running}${reset}</p>`;
+}
+
+function key_html(k: Key): string {
+  const [name, about] = KEY[k.name] ?? [k.name, ""];
+  const id = "set-key-" + k.name;
+  const field = k.name === "apns" ? `<textarea id="${id}" name="key.${k.name}" rows="3" placeholder="Paste a new key to set it" spellcheck="false"></textarea>` : `<input id="${id}" type="password" name="key.${k.name}" autocomplete="new-password" placeholder="Paste a new key to set it" spellcheck="false" autocapitalize="off">`;
+  const tail = k.tail === "" ? "" : `, ending in <code>${esc(k.tail)}</code>`;
+  const from = k.from === "file" ? `Set${tail}, in keys.json` : "Not set";
+  const reset = k.from === "file" ? ` <button type="button" class="reset">Remove</button>` : "";
+  const label = `<label for="${id}">${esc(name)}<small>${esc(about)} <code>${esc(k.env)}</code></small></label>`;
+  return `<div class="set key" data-key="key.${esc(k.name)}">${label}<div class="field">${field}</div><p class="from">${from}${reset}</p><p class="err"></p></div>`;
+}
+
+// a pick setting's four lists, vendor, model, effort and speed, for
+// `value` (vendor:model:effort:speed): the vendors and the models checked
+// (`vendors`, `models`), the vendor's models, the model's speeds; first
+// `none` (agents: the chat's pick, value ""), which shows the vendor's
+// list only. A part they don't offer shows, said.
+export function picks_html(key: string, vendors: string[], models: string[], value: string, none: string | null): string {
+  const [vendor = "", model = "", effort = "", speed = ""] = value === "" ? [] : value.split(":");
+  const known = (VENDORS as string[]).includes(vendor);
+  const offered = (VENDORS as string[]).filter((v) => vendors.includes(v));
+  const labels = known ? Pick.models([vendor as Vendor], models).map(([, m]) => m.label) : [];
+  const speeds = known ? Pick.model(vendor as Vendor, model)?.speeds ?? [] : [];
+  const select = (part: string, name: string, all: string[], on: string, first: string | null) => {
+    const opts: Array<[string, string]> = [...(first === null ? [] : [["", first] as [string, string]]), ...(all.includes(on) || (on === "" && first !== null) ? [] : [[on, on + " (not offered)"] as [string, string]]), ...all.map((x): [string, string] => [x, x])];
+    const items = opts.map(([v, text]) => `<option value="${esc(v)}"${v === on ? " selected" : ""}>${esc(text)}</option>`).join("");
+    return `<select id="set-${key}-${part}" name="${key}.${part}" aria-label="${name}">${items}</select>`;
+  };
+  const head = select("vendor", "Vendor", offered, vendor, none);
+  return vendor === "" ? head : head + select("model", "Model", labels, model, null) + select("effort", "Effort", EFFORTS, effort, null) + select("speed", "Speed", speeds, speed, null);
+}
+
+// a pick of its four parts as chosen: a model its vendor lacks gives way
+// to the vendor's first checked, a speed the model lacks to its first, no
+// effort to medium; no vendor: none ("")
+export function pick_mend(parts: string[], models: string[]): string {
+  const [vendor = "", model = "", effort = "", speed = ""] = parts;
+  if (!(VENDORS as string[]).includes(vendor)) {
+    return vendor === "" ? "" : parts.join(":");
+  }
+  const m = Pick.model(vendor as Vendor, model) ?? Pick.models([vendor as Vendor], models)[0]?.[1];
+  if (m === undefined) {
+    return parts.join(":");
+  }
+  return [vendor, m.label, effort || "medium", m.speeds.includes(speed) ? speed : m.speeds[0]].join(":");
+}
+
+// a section of the settings page: its title, then its markup
 function section_html(title: string, body: string): string {
   return `<section><h2>${esc(title)}</h2>${body}</section>`;
 }

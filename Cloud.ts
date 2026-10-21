@@ -69,7 +69,7 @@ const SPAN      = 24 * 60 * 60 * 1000;
 
 // the connection to APNs, kept open as Apple asks, and the token its
 // requests carry, signed again past 40 minutes (Apple takes 20 to 60)
-const PUSH = { link: null as http2.ClientHttp2Session | null, jwt: "", at: 0 };
+const PUSH = { link: null as http2.ClientHttp2Session | null, jwt: "", at: 0, by: "" };
 const PUSH_AGE = 40 * 60 * 1000;
 
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -260,7 +260,7 @@ export namespace Cloud {
     const body = JSON.stringify({ aps: { alert: { body: text.replace(/\s+/g, " ").slice(0, 200) }, sound: "default" } });
     for (const { token } of phones) {
       const link = Cloud.apns();
-      const head = { ":method": "POST", ":path": "/3/device/" + token, authorization: "bearer " + PUSH.jwt, "apns-topic": config.APPLE.replace(/^[^.]*\./, ""), "apns-push-type": "alert" };
+      const head = { ":method": "POST", ":path": "/3/device/" + token, authorization: "bearer " + Cloud.apns_jwt(), "apns-topic": config.APPLE.replace(/^[^.]*\./, ""), "apns-push-type": "alert" };
       const req = link.request(head);
       let out = "";
       req.setEncoding("utf8");
@@ -277,15 +277,22 @@ export namespace Cloud {
     }
   }
 
-  // the connection to APNs, opened again if it closed, and its token
-  // signed again if old: the team's, by the key config.APNS names
+  // the connection to APNs, opened again if it closed
   export function apns(): http2.ClientHttp2Session {
     if (PUSH.link === null || PUSH.link.closed || PUSH.link.destroyed) {
       const link = (PUSH.link = http2.connect("https://api.push.apple.com"));
       link.on("error", (err) => console.error("push: " + err.message));
       link.on("close", () => PUSH.link === link && (PUSH.link = null));
     }
-    if (Date.now() - PUSH.at > PUSH_AGE) {
+    return PUSH.link!;
+  }
+
+  // the token pushes go with: the team's, signed by the key config.APNS
+  // names; signed again if old, or if the key, its id or the team changed
+  // since (the settings page sets them: Settings.ts)
+  export function apns_jwt(): string {
+    const by = Cloud.hash(config.APNS + "\0" + config.APPLE + "\0" + config.KEYS.apns);
+    if (Date.now() - PUSH.at > PUSH_AGE || PUSH.by !== by) {
       const b64 = (obj: object) => Buffer.from(JSON.stringify(obj)).toString("base64url");
       const head = b64({ alg: "ES256", kid: config.APNS }) + "." + b64({ iss: config.APPLE.split(".")[0], iat: Math.floor(Date.now() / 1000) });
       const der = Buffer.from(config.KEYS.apns.replace(/-----[^-]+-----|\s/g, ""), "base64");
@@ -293,8 +300,9 @@ export namespace Cloud {
       const sig = crypto.sign("sha256", Buffer.from(head), { key, dsaEncoding: "ieee-p1363" });
       PUSH.jwt = head + "." + sig.toString("base64url");
       PUSH.at = Date.now();
+      PUSH.by = by;
     }
-    return PUSH.link!;
+    return PUSH.jwt;
   }
 
   // Acts
@@ -403,7 +411,8 @@ export namespace Cloud {
     switch (url.pathname) {
       case "/api/me": {
         await billing.balance(user.id);
-        return Response.json({ id: user.id, name: user.name, bills: billing.bills, credits: billing.credits(user.id) });
+        const owner = config.config_owner(user);
+        return Response.json({ id: user.id, name: user.name, bills: billing.bills, credits: billing.credits(user.id), owner });
       }
       case "/api/account": {
         await billing.balance(user.id);

@@ -86,3 +86,55 @@ test("a turn's wait names the model it runs on, not one picked since", async () 
   expect(out.picked).toBe(out.to);
   expect(out.after).toBe(out.model);
 });
+
+// the settings page over HTTP: the owner's alone; a key saved is never
+// sent back nor logged, and keys.json is the owner's only
+test("settings: the owner's alone, keys never sent back", async () => {
+  const dir = fs.mkdtempSync(os.tmpdir() + "/unii-server-");
+  fs.writeFileSync(dir + "/config.json", JSON.stringify({ owner: "owner@example.com" }));
+  const site = "http://127.0.0.1:9491";
+  const proc = Bun.spawn([process.execPath, import.meta.dir + "/Server.ts", "9491"], {
+    env    : { ...process.env, UNII_DIR: dir, UNII_SITE: site, ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "", RESEND_API_KEY: "" },
+    stdout : "pipe",
+    stderr : "inherit",
+  });
+  let out = "";
+  (async () => {
+    const reader = proc.stdout.getReader();
+    for (let piece = await reader.read(); !piece.done; piece = await reader.read()) {
+      out += new TextDecoder().decode(piece.value);
+    }
+  })();
+  const get = (path: string, init: RequestInit = {}) => fetch(site + path, { ...init, redirect: "manual" });
+  const sign_in = async (who: string) => {
+    await get("/api/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ who }) });
+    for (let k = 0; k < 50 && !out.includes("sign-in link for " + who); k++) {
+      await Bun.sleep(50);
+    }
+    const link = out.match(new RegExp("sign-in link for " + who.replace(".", "\\.") + ": (\\S+)"))![1];
+    return ((await get(link.slice(site.length))).headers.get("set-cookie") ?? "").split(";")[0];
+  };
+  try {
+    for (let k = 0; k < 100 && (await fetch(site + "/").catch(() => null)) === null; k++) {
+      await Bun.sleep(50);
+    }
+    const owner = await sign_in("owner@example.com");
+    const other = await sign_in("other@example.com");
+    const json = { "content-type": "application/json" };
+    expect((await get("/api/settings")).status).toBe(401);
+    expect((await get("/api/settings", { headers: { cookie: other } })).status).toBe(403);
+    const { version } = await (await get("/api/settings", { headers: { cookie: owner } })).json();
+    const body = JSON.stringify({ version, set: {}, keys: { anthropic: "sk-ant-api03-NEVERSENTBACK0123456789-tail" } });
+    expect((await get("/api/settings", { method: "POST", headers: { ...json, cookie: other }, body })).status).toBe(403);
+    expect(fs.existsSync(dir + "/keys.json")).toBe(false);
+    const saved = await get("/api/settings", { method: "POST", headers: { ...json, cookie: owner }, body });
+    expect(saved.status).toBe(200);
+    expect(await saved.text()).not.toContain("NEVERSENTBACK");
+    expect(fs.statSync(dir + "/keys.json").mode & 0o777).toBe(0o600);
+    expect(out).not.toContain("NEVERSENTBACK");
+  } finally {
+    proc.kill();
+    await proc.exited;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}, 30000);

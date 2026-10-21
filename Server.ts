@@ -44,6 +44,7 @@ import { JOBS, Memory, type Given, type Msg as Log, type Share } from "./Memory.
 import { OpenAI, TRANSCRIBER } from "./OpenAI.ts";
 import { Pick } from "./Pick.ts";
 import { Price } from "./Price.ts";
+import { Settings } from "./Settings.ts";
 import { MASTER, SEARCHES, Tools, type Agent, type Live, type Moved as Kit } from "./Tools.ts";
 import { email_ask, FRAME, IMAGES, live_push, MOVE, PING, QUIT, SUMMARIES, TICK, TURN, WIRE, type Answer, type Part, type Server as Out, type Wait } from "./View.ts";
 import * as config from "./Config.ts";
@@ -245,6 +246,9 @@ const WEB: Record<string, string> = {
   "/og.png"         : og_png,
   "/style.css"      : style_css,
 };
+
+// the settings page (Settings.ts), drawn by the site's page as /account
+WEB["/settings"] = WEB["/"];
 
 // a new account's chat opens as its guest's talk went (main.ts guest), so
 // its next line follows from the email: hello.md asking for it (View.ask),
@@ -1077,6 +1081,25 @@ export namespace Chat {
     return summing ? SUMMARIES : "";
   }
 
+  // the settings changed (Settings.ts): the chat runs on its pick if
+  // still offered, else on the default (told once, as Chat.open tells
+  // it), and its views see the offer. One leaving (given, ended) is
+  // left: where it goes, it opens on the settings read there
+  export function offer(chat: Chat): void {
+    if (chat.ending !== null || Chat.chats.get(chat.acct.user) !== chat) {
+      return;
+    }
+    const pick = Pick.load(chat.mem.pick, config.OFFER, config.PICK);
+    const saved = chat.mem.pick === null ? null : Pick.label(chat.mem.pick as Pick);
+    chat.pick = pick;
+    if (saved !== null && saved !== Pick.label(pick)) {
+      chat.mem.pick = pick;
+      Memory.save(chat.mem);
+      Chat.note(chat, saved + " isn't offered here, so the chat now runs on " + Pick.label(pick) + ".");
+    }
+    Chat.change(chat);
+  }
+
   // the wallet told the change (Billing.ts changed): what it ends stops
   // all work running, saying so; what runs is saved, unless the chat ended
   export function change(chat: Chat): void {
@@ -1575,6 +1598,9 @@ export namespace Main {
       if (user === null) {
         return new Response("sign in first", { status: 401 });
       }
+      if (p === "/api/settings") {
+        return await Main.settings(req, user);
+      }
       await Main.here(user.id);
       if (p === "/ws") {
         if ((Main.sockets.get(user.id) ?? 0) >= SOCKETS || !Main.spend(USERS, user.id)) {
@@ -1667,6 +1693,7 @@ export namespace Main {
     const hand = HAND + Main.index;
     Main.port = port;
     Chat.cloud = Cloud.open(change, signed, post);
+    process.on("message", Main.heard);
     Main.back = await Main.dial(hand);
     if (Main.back === null) {
       Main.listed.resolve();
@@ -1675,9 +1702,12 @@ export namespace Main {
     Tools.coming(Main.arrived());
     Chat.cloud.billing.start(Main.index, (user) => Main.shard(user) === Main.index, Chat.chats);
     Main.forget(USERS);
-    process.on("message", Main.heard);
     process.on("disconnect", () => process.exit(0));
     process.on("unhandledRejection", Main.unowned);
+    // the settings as the files are now: a save made since this process
+    // read them (at its start) whose word came before it listened is
+    // read here; one after, it hears (Main.heard)
+    Main.configured(true);
     Main.server = Bun.serve<Sock["data"]>({
       port               : port,
       hostname           : "127.0.0.1",
@@ -1748,6 +1778,52 @@ export namespace Main {
     Main.listen(hand);
   }
 
+  // the settings page's (Settings.ts), the owner's alone (whom
+  // config.json names; none: no one): a GET reads them, a POST saves;
+  // once saved, every process reads them again (with workers, by the
+  // supervisor's word: Main.supervise)
+  export async function settings(req: Request, user: User): Promise<Response> {
+    const fresh = { "cache-control": "no-store" };
+    if (!config.config_owner(user)) {
+      const error = config.OWNER.length === 0 ? "No owner is named: the server's settings page opens for the sign-in emails \"owner\" names in config.json (or UNII_OWNER), set on the server." : "Only the server's owner can see its settings.";
+      return Response.json({ error }, { status: 403, headers: fresh });
+    }
+    if (req.method === "GET") {
+      return Response.json(Settings.page(), { headers: fresh });
+    }
+    if (req.method !== "POST") {
+      return new Response("settings are read or saved", { status: 405 });
+    }
+    if (!Main.spend(USERS, user.id)) {
+      return Response.json({ error: "Too many requests: wait a moment." }, { status: 429 });
+    }
+    const out = await Settings.save(req);
+    if (out.saved.length > 0) {
+      console.log("unii: settings saved by user " + user.id + ": " + out.saved.join(", "));
+    }
+    if (out.wrote) {
+      Main.configured(false);
+      process.send?.({ $: "config" });
+    }
+    return Response.json(out.body, { status: out.status, headers: fresh });
+  }
+
+  // the settings changed (read: config.json and keys.json read again
+  // first, a save elsewhere): each chat here runs on what they offer
+  export function configured(read: boolean): void {
+    if (read) {
+      try {
+        config.config_reload();
+      } catch (err: any) {
+        console.error("unii: the settings saved couldn't be read: " + (err?.message ?? err));
+        return;
+      }
+    }
+    for (const chat of Chat.chats.values()) {
+      Main.event("the settings of user " + chat.acct.user, () => Chat.offer(chat));
+    }
+  }
+
   // a mail, sent by the supervisor: its answer
   export function mail(send: (msg: object) => void, mail: object): Promise<string | null> {
     const id = crypto.randomUUID();
@@ -1772,6 +1848,10 @@ export namespace Main {
       case "mailed": {
         Main.mails.get(msg.id)?.(msg.err);
         Main.mails.delete(msg.id);
+        return;
+      }
+      case "config": {
+        Main.configured(true);
         return;
       }
     }
@@ -2090,7 +2170,8 @@ export namespace Main {
   // UNII_WORKER=k): holds the lock, starts again a worker that dies,
   // answers each request with its worker's address (`x-unii-worker`:
   // README; past its network's limit, NETS, 429), relays a worker's word
-  // to all, sends their mail. A deploy (SIGHUP) starts each worker anew,
+  // to all (a sign-in, settings saved: read again here too, for the mail
+  // key), sends their mail. A deploy (SIGHUP) starts each worker anew,
   // which takes the chats of the one before (Main.start); one that fails
   // to start leaves that one serving. Its own code changes only on a
   // restart
@@ -2110,6 +2191,15 @@ export namespace Main {
         }
         case "mail": {
           Mail.send(config.KEYS.resend, msg.mail).then((err) => proc.send({ $: "mailed", id: msg.id, err })).catch(() => {});
+          return;
+        }
+        case "config": {
+          try {
+            config.config_reload();
+          } catch (err: any) {
+            console.error("unii: the settings saved couldn't be read: " + (err?.message ?? err));
+          }
+          all.forEach((w) => w !== proc && w.send(msg));
           return;
         }
       }
