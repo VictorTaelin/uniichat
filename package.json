@@ -3,6 +3,7 @@
   "private": true,
   "scripts": {
     "test": "bun test --isolate",
+    "build": "bun Build.ts",
     "web": "bun build web/src/main.ts --outfile web/app.js --target browser"
   },
   "dependencies": {

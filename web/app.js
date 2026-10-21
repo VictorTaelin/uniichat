@@ -1149,14 +1149,14 @@ function view_pick(v) {
   if (v.pick === null) {
     return [];
   }
-  const { effort, speed } = v.pick;
-  const model = Pick.shown(v.pick.vendor, v.pick.model, v.vendors);
-  const rate = Price.rate(Pick.ask(v.pick).model);
+  const { model, effort, speed } = v.pick;
+  const plan = v.pick.vendor === "claude-sub";
+  const rate = plan ? undefined : Price.rate(Pick.ask(v.pick).model);
   const price = rate === undefined ? "" : ": $" + rate.input + "/M tokens in, $" + rate.output + "/M out";
   return [
     { text: model, move: "model", hint: model + price },
-    { text: effort, move: "effort", hint: effort + " effort: how long it thinks first; more is smarter, slower and costs more" },
-    { text: speed, move: "speed", hint: speed + ": ×" + Price.times(speed) + " the price" }
+    { text: effort, move: "effort", hint: effort + " effort: how long it thinks first; more is smarter, slower" + (plan ? "" : " and costs more") },
+    { text: speed, move: "speed", hint: plan ? speed : speed + ": ×" + Price.times(speed) + " the price" }
   ];
 }
 function view_count(v) {

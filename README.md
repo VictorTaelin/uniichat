@@ -61,9 +61,9 @@ Other commands:
 
     bun run test                     # the tests, each file on its own
     bun run web                      # rebuilds web/app.js from web/src
-    bun build --compile Term.ts --outfile unii
-                                     # one `unii` executable; `unii serve`
-                                     # runs the server it carries
+    bun run build                    # one `unii` executable; `unii serve`
+                                     # runs the server it carries, and
+                                     # claude-sub's Claude Code (Build.ts)
 
 Your chats live in ~/.unii/users/<id>, one JSON line per message
 (main/) and per summary (tree/). They are the memory: back them up.
@@ -94,7 +94,11 @@ also be set as the variable `UNII_<KEY>`:
   honors its `x-unii-worker` header (Server.ts explains).
 - `apple`, `apns`: the iOS app's App ID and push key id (ios/).
 - `claude_sub`, `claude`: claude-sub's Claude Code config dir (default
-  ~/.unii/claude-sub) and executable (default: the Agent SDK's).
+  ~/.unii/claude-sub) and executable (default: the one `unii` carries,
+  else the Agent SDK's in node_modules).
+- `claude_lanes`, `claude_idle`: how many claude-sub Claude Codes may run
+  at once (default 3; about 250 MB each) and how long one may sit unused
+  before it ends, in seconds (default 300).
 
 Keys are read from the environment: `ANTHROPIC_API_KEY`,
 `OPENAI_API_KEY`, `RESEND_API_KEY` (to email sign-in links; none: they
@@ -105,9 +109,9 @@ With only an OpenAI key, set `vendors`, `pick` and `compactor` to
 UNII_PICK=openai-api:gpt-6.1-sol:medium:slow
 UNII_COMPACTOR=openai-api:gpt-6-luna:high:slow`.
 
-With a Claude plan instead, `bun install`, run `bun Term.ts claude`
-(`unii claude`; `logout`, `status`) to sign in through Claude Code, and
-use `claude-sub` the same way. Every user's calls then run on your
+With a Claude plan instead, run `unii claude` (`logout`, `status`;
+from source: `bun install`, then `bun Term.ts claude`) to sign in
+through Claude Code, and use `claude-sub` the same way. Every user's calls then run on your
 plan: Anthropic allows no one to offer others their Claude plan, so
 offer it only on a server for yourself. A server that bills refuses it.
 
