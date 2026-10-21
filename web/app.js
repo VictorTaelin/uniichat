@@ -2288,13 +2288,17 @@ function anchor() {
 }
 function mine() {
   const rows = [...document.querySelectorAll("#log .msg.user")];
-  rows.findLast(mine_above)?.scrollIntoView();
+  const el = rows.findLast(mine_above);
+  if (el !== undefined) {
+    P.end = false;
+    el.scrollIntoView();
+  }
   mine_show();
 }
 function mine_show() {
   const first = document.querySelector("#log .msg.user");
   $(".mine").hidden = first === null || !mine_above(first);
-  $(".down").hidden = innerHeight + scrollY >= document.documentElement.scrollHeight - 1;
+  $(".down").hidden = P.end || innerHeight + scrollY >= document.documentElement.scrollHeight - 1;
 }
 function down() {
   scrollTo(0, document.documentElement.scrollHeight);
