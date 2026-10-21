@@ -289,7 +289,7 @@ test("a refresh refused for good fails the call, keeping the file", async () => 
 
 test("a first sign-in makes the file's missing dir, owner only", async () => {
   fs.rmSync(DIR, { recursive: true, force: true });
-  await ChatGPT.exchange("code-ok", "http://127.0.0.1:1455/auth/callback", "v");
+  await ChatGPT.exchange("code-ok", "https://auth.openai.com/deviceauth/callback", "v");
   expect(fs.statSync(DIR).mode & 0o777).toBe(0o700);
   expect(fs.statSync(FILE).mode & 0o777).toBe(0o600);
 });
@@ -329,27 +329,6 @@ test("a patient call (a summary's) at a usage limit waits for the reset, not ask
   }
   expect(naps[0]).toBeGreaterThan(3600e3);
   expect(fake.requests).toHaveLength(1);
-});
-
-test("browser sign-in: PKCE, its state checked, back to the local redirect", async () => {
-  let link = "";
-  const port = 20000 + Math.floor(Math.random() * 20000);
-  const done = ChatGPT.browser((url) => (link = url), port);
-  const p = new URL(link).searchParams;
-  expect((await fetch(p.get("redirect_uri") + "?code=code-ok&state=nope")).status).toBe(400);
-  expect((await fetch(p.get("redirect_uri") + "?code=code-ok&state=" + p.get("state"))).status).toBe(200);
-  await done;
-  const form = fake.exchanges[0];
-  expect(form.redirect_uri).toBe(p.get("redirect_uri")!);
-  expect(new Bun.CryptoHasher("sha256").update(form.code_verifier).digest("base64url")).toBe(p.get("code_challenge")!);
-  expect(fs.existsSync(FILE)).toBe(true);
-});
-
-test("browser sign-in never answered ends at its deadline, saving nothing, its port freed", async () => {
-  const port = 20000 + Math.floor(Math.random() * 20000);
-  await expect(ChatGPT.browser(() => {}, port, 200)).rejects.toThrow();
-  expect(fs.existsSync(FILE)).toBe(false);
-  Bun.serve({ hostname: "127.0.0.1", port, fetch: () => new Response("") }).stop(true);
 });
 
 test("device sign-in: polled till entered, past the issuer's 5xx, and saved", async () => {

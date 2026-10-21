@@ -106,7 +106,7 @@ UNII_PICK=openai-api:gpt-6.1-sol:medium:slow
 UNII_COMPACTOR=openai-api:gpt-6-luna:high:slow`.
 
 With a ChatGPT plan instead, run `unii chatgpt` (or `bun ChatGPT.ts`;
-`device` to sign in from another computer, `logout` to sign out) and use
+it shows a link and a code to enter in any browser; `logout` signs out) and use
 `openai-sub` the same way. The sign-in is the server's: every user's
 calls run on that one plan, so offer it only on a server for yourself.
 A server that bills refuses to start with it.

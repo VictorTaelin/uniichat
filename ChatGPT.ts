@@ -2,9 +2,9 @@
 // =======
 // The openai-sub vendor: a ChatGPT plan instead of an API key, signed in
 // and called as Codex CLI does (openai/codex: codex-rs login, codex-api).
-// `unii chatgpt` (or `bun ChatGPT.ts`) signs in as Codex's OAuth client:
-// in a browser, with PKCE, back to 127.0.0.1:1455, or (`device`) by a
-// code typed at auth.openai.com/codex/device. The tokens go to FILE
+// `unii chatgpt` (or `bun ChatGPT.ts`) signs in as Codex's OAuth client,
+// by a device code typed at auth.openai.com/codex/device (no redirect
+// back to this computer: the server is often another). The tokens go to FILE
 // (config `chatgpt`), in Codex's auth.json shape, mode 600. Each request
 // reads FILE; the access token is refreshed 5 min before it expires and
 // once on a 401, one refresh at a time in a process. A refresh refused as
@@ -16,8 +16,6 @@
 // the user as such, with its reset time (Agent.ts, AskAI.ts).
 // config `chatgpt_issuer` and `chatgpt_url` point it elsewhere (tests).
 
-import * as child from "node:child_process";
-import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { Ask } from "./AskAI.ts";
@@ -41,21 +39,16 @@ type Sub = State & { items: any[]; speed: string };
 
 // Codex CLI's OAuth client
 const CLIENT    = "app_EMoamEEZ73f0CkXaXp7hrann";
-const SCOPE     = "openid profile email offline_access";
 const ISSUER    = config.config_get("chatgpt_issuer", "https://auth.openai.com").replace(/\/$/, "");
 const RESPONSES = config.config_get("chatgpt_url", "https://chatgpt.com/backend-api/codex").replace(/\/$/, "") + "/responses";
 
-// the browser sign-in's redirect port (registered for Codex's client)
-const PORT = 1455;
-
 // how close to its expiry a token is refreshed; how old a token with no
 // expiry may get; the longest a request to the issuer takes; how long a
-// sign-in waits for its user, in a browser or by a device code; how long
+// sign-in waits for its user to enter its device code; how long
 // a refresh refused as used waits for another process's tokens (ms)
 const EARLY   = 5 * 60e3;
 const OLD     = 8 * 86400e3;
 const REQUEST = 20e3;
-const BROWSER = 10 * 60e3;
 const DEVICE  = 15 * 60e3;
 const SETTLE  = 2e3;
 
@@ -215,12 +208,6 @@ export namespace ChatGPT {
   // Sign-in
   // -------
 
-  export function pkce(): { verifier: string; challenge: string } {
-    const verifier = crypto.randomBytes(64).toString("base64url");
-    const challenge = crypto.createHash("sha256").update(verifier).digest("base64url");
-    return { verifier, challenge };
-  }
-
   // an authorization code's tokens, saved
   export async function exchange(code: string, redirect: string, verifier: string): Promise<Auth> {
     const form = new URLSearchParams({ grant_type: "authorization_code", client_id: CLIENT, code, redirect_uri: redirect, code_verifier: verifier });
@@ -234,60 +221,6 @@ export namespace ChatGPT {
     return auth;
   }
 
-  // in a browser: the link to open (`show`), then the redirect back to
-  // `port` with the code, within `wait` ms; its server stops however it
-  // ends
-  export async function browser(show: (url: string) => void, port = PORT, wait = BROWSER): Promise<Auth> {
-    const { verifier, challenge } = ChatGPT.pkce();
-    const state = crypto.randomBytes(32).toString("base64url");
-    const redirect = "http://127.0.0.1:" + port + "/auth/callback";
-    const query = new URLSearchParams({
-      response_type              : "code",
-      client_id                  : CLIENT,
-      redirect_uri               : redirect,
-      code_challenge             : challenge,
-      code_challenge_method      : "S256",
-      state,
-      scope                      : SCOPE,
-      id_token_add_organizations : "true",
-      codex_cli_simplified_flow  : "true",
-      originator                 : "codex_cli_rs",
-    });
-    const { promise, resolve, reject } = Promise.withResolvers<Auth>();
-    const page = (text: string, status = 200) => new Response(text, { status, headers: { "content-type": "text/plain; charset=utf-8" } });
-    const server = Bun.serve({
-      hostname : "127.0.0.1",
-      port,
-      fetch    : async (req) => {
-        const p = new URL(req.url).searchParams;
-        if (new URL(req.url).pathname !== "/auth/callback") {
-          return page("Not found.", 404);
-        }
-        if (p.get("state") !== state) {
-          return page("This sign-in link is stale: start again.", 400);
-        }
-        try {
-          if (p.get("error") || !p.get("code")) {
-            throw new Error("ChatGPT sign-in failed: " + (p.get("error_description") || p.get("error") || "no code"));
-          }
-          resolve(await ChatGPT.exchange(p.get("code")!, redirect, verifier));
-          return page("Signed in to ChatGPT. You can close this tab.");
-        } catch (err: any) {
-          reject(err);
-          return page("Sign-in failed.", 400);
-        }
-      },
-    });
-    const timer = setTimeout(() => reject(new Error("ChatGPT sign-in timed out after " + Math.round(wait / 60e3) + " minutes")), wait);
-    try {
-      show(ISSUER + "/oauth/authorize?" + query);
-      return await promise;
-    } finally {
-      clearTimeout(timer);
-      server.stop();
-    }
-  }
-
   // by a device code: the link and code to show, then polling till the
   // user entered it, within `wait` ms; a poll the issuer fails (5xx, no
   // answer) polls on
@@ -297,7 +230,7 @@ export namespace ChatGPT {
       fetch(api + path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(REQUEST) });
     const res = await post("/usercode", { client_id: CLIENT });
     if (!res.ok) {
-      const off = res.status === 404 ? " (device code sign-in is off for this account: use the browser one)" : "";
+      const off = res.status === 404 ? " (device code sign-in is off for this account: allow it in ChatGPT's security settings)" : "";
       throw new Error("ChatGPT device code request failed: HTTP " + res.status + off);
     }
     const got = await res.json();
@@ -341,19 +274,13 @@ export namespace ChatGPT {
     return (id.email ?? "an account") + (plan ? " (" + plan + " plan)" : "");
   }
 
-  // `unii chatgpt [device|logout]`
+  // `unii chatgpt [logout]`
   export async function cli(args: string[]): Promise<void> {
     if (args.includes("logout")) {
       console.log(await ChatGPT.logout());
       return;
     }
-    const auth = args.includes("device")
-      ? await ChatGPT.device((url, code) => console.log("To sign this server in to ChatGPT, open\n\n  " + url + "\n\nand enter the code\n\n  " + code + "\n\n(it expires in 15 minutes; enter it only if you started this sign-in)"))
-      : await ChatGPT.browser((url) => {
-          console.log("To sign this server in to ChatGPT, open this link (on this computer: it returns to 127.0.0.1:" + PORT + "):\n\n  " + url + "\n\nNo browser here? Run `unii chatgpt device` instead.");
-          const open = process.platform === "darwin" ? "open" : process.platform === "win32" ? "explorer" : "xdg-open";
-          child.spawn(open, [url], { stdio: "ignore", detached: true }).on("error", () => {}).unref();
-        });
+    const auth = await ChatGPT.device((url, code) => console.log("To sign this server in to ChatGPT, open\n\n  " + url + "\n\nand enter the code\n\n  " + code + "\n\n(it expires in 15 minutes; enter it only if you started this sign-in)"));
     console.log("\nSigned in to ChatGPT as " + ChatGPT.who(auth) + "; tokens in " + config.CHATGPT + ".\nOffer it with the config vendors=openai-sub (README).");
   }
 
