@@ -1,12 +1,13 @@
 // Machine
 // =======
-// The tools that touch a device: shell, read, write, edit (TOOLS) and
-// computer (Computer.ts), run by a terminal (Term.ts) as Jobs, each in
+// The tools that touch a device: shell, read, write, edit, view_video
+// (TOOLS) and computer (Computer.ts), run by a terminal (Term.ts) as Jobs, each in
 // its agent's dir under the device's work dir. A stop kills the job's
 // shell and its process group. As this unii quits, end() kills every
 // shell's group (SHELLS), and any process marked UNII_RUN that left it.
 // A file changed (write over one, edit) answers as a unified diff (Diff),
-// which both views draw as one (Md.ts).
+// which both views draw as one (Md.ts). read shows an image file as an
+// image; view_video, frames of a video on one sheet (ffmpeg's).
 // This side imports nothing of the server's (whose Config.ts would take
 // the user's API keys out of the jobs' environment).
 
@@ -16,6 +17,7 @@ import * as path from "node:path";
 import type { Out } from "./Agent.ts";
 import { CAP, clip, clip_end } from "./Clip.ts";
 import { Computer } from "./Computer.ts";
+import { FIT, IMAGE, image_kind, PIXELS } from "./View.ts";
 
 // Types
 // =====
@@ -57,12 +59,19 @@ const CONTEXT = 3;
 export const STR = { type: "string" };
 export const INT = { type: "integer" };
 
+// the most frames a video sheet takes
+const SHEET = 100;
+
+// a video sheet's gap between frames, and around them, in px
+const GAP = 4;
+
 const EDIT = { type: "object", properties: { path: STR, old: STR, new: STR, all: { type: "boolean" } }, required: ["path", "old", "new"] };
 
 export const TOOLS: Spec[] = [
   spec("shell", "Run a command with the device's shell ($SHELL -c), stdout and stderr together, and return its output, then its exit code and time, as (exit 0 in 0.4 s); output past " + CAP + " characters keeps its head and tail. Each call is a new shell. The call waits until the command and everything holding its output end, so give background jobs their own output file. Background jobs live only while unii is open on the device: closing it kills every process the calls started.", { command: STR }, ["command"]),
-  spec("read", "Read a text file. offset: the first line to show (from 1); limit: how many lines; at: the character of the first line to start from. It ends saying the lines shown, as [lines 4-7 of 15]; output past " + CAP + " characters comes in pages, saying where to go on.", { path: STR, offset: INT, limit: INT, at: INT }, ["path"]),
+  spec("read", "Read a text file. offset: the first line to show (from 1); limit: how many lines; at: the character of the first line to start from. It ends saying the lines shown, as [lines 4-7 of 15]; output past " + CAP + " characters comes in pages, saying where to go on. An image file (png, jpeg, gif, webp) comes as the picture, scaled to fit " + FIT + " px, or max_side px if given (a GIF shows its first frame; view_video plays it).", { path: STR, offset: INT, limit: INT, at: INT, max_side: INT }, ["path"]),
   spec("write", "Write a whole file, making its directories. Answers a unified diff of what changed (a new file: all its lines added).", { path: STR, content: STR }, ["path", "content"]),
+  spec("view_video", "See part of a video (any file ffmpeg opens: mp4, mkv, webm, mov, avi, gif...) as ONE image: a grid of its frames, row by row, each stamped with its frame number (top) and time (bottom), fitting " + FIT + " px, or max_side px. It also answers a line on the whole video (duration, fps, frames, size). start and end: the range, ends included, in frames from 0 (or seconds, with unit \"second\"); by default the whole video. step: take every step-th frame; by default the one that gives at most 16. Each frame gets smaller as more share the sheet: past about 25 they get hard to read, and " + SHEET + " is the most. For a long stretch, raise step, narrow the range, or call again on the next range. Frames are counted from the file's start, so a range late in a long video takes longer. Needs ffmpeg and ffprobe on the device.", { path: STR, start: { type: "number" }, end: { type: "number" }, unit: { type: "string", enum: ["frame", "second"] }, step: INT, max_side: INT }, ["path"]),
   spec("edit", "Replace text in files: the edits in order, each on its file as the edits before it left it. old must match exactly, whitespace included, and only once, unless all is true, which replaces every match. If any edit fails, no file is changed. Answers a unified diff of each file.", { edits: { type: "array", items: EDIT, minItems: 1 } }, ["edits"]),
 ];
 
@@ -133,7 +142,15 @@ export namespace Machine {
           return await Machine.shell(cwd, String(input.command), signal);
         }
         case "read": {
+          const data = fs.readFileSync(file);
+          const kind = image_kind(data);
+          if (kind !== null) {
+            return await Machine.image(data, kind, Machine.side(input.max_side));
+          }
           return Machine.read(file, Number(input.offset ?? 1), Number(input.limit ?? Infinity), Number(input.at ?? 0));
+        }
+        case "view_video": {
+          return await Machine.video(file, input, signal);
         }
         case "write": {
           return Machine.write(file, String(input.path), String(input.content));
@@ -254,6 +271,120 @@ export namespace Machine {
     const go    = whole ? "" : "; go on with offset " + next + (col === 0 ? "" : ", at " + col);
     const shown = "\n[lines " + from + "-" + last + " of " + lines.length + go + "]";
     return { text: text.slice(at, end).replace(/\n$/, "") + shown, fail: false };
+  }
+
+  // the longest side an image goes at: max_side, if given, up to FIT
+  export function side(max: unknown): number {
+    const n = Math.floor(Number(max));
+    return n >= 1 && n < FIT ? n : FIT;
+  }
+
+  // an image file as models get it: as is, if no larger than side and of
+  // IMAGE bytes at most; else scaled to fit side, as a JPEG (a JPEG's) or
+  // a WebP (which keeps any transparency)
+  export async function image(data: Buffer, kind: string, side: number): Promise<Out> {
+    const img  = new Bun.Image(data);
+    const size = await img.metadata().catch(() => null);
+    if (size === null) {
+      return { text: "Not a readable " + kind + " (" + data.length + " bytes).", fail: true };
+    }
+    const { width: w0, height: h0 } = size;
+    if (w0 * h0 > PIXELS) {
+      return { text: "An image of " + w0 + "x" + h0 + ": too many pixels to open.", fail: true };
+    }
+    const k = Math.min(1, side / Math.max(w0, h0));
+    if (k === 1 && data.length <= IMAGE) {
+      return { text: "[image " + w0 + "x" + h0 + "]", fail: false, imgs: [{ type: kind, data: data.toString("base64") }] };
+    }
+    const [w, h] = [Math.max(1, Math.round(w0 * k)), Math.max(1, Math.round(h0 * k))];
+    const fit  = img.resize(w, h);
+    const jpeg = kind === "image/jpeg";
+    const out  = await (jpeg ? fit.jpeg({ quality: 85 }) : fit.webp({ quality: 85 })).bytes();
+    const type = jpeg ? "image/jpeg" : "image/webp";
+    return { text: "[image " + w + "x" + h + ", scaled from " + w0 + "x" + h0 + "]", fail: false, imgs: [{ type, data: Buffer.from(out).toString("base64") }] };
+  }
+
+  // frames of a video (input: view_video's) on one sheet, as ffmpeg makes
+  // it, with a line on the whole video from ffprobe. The frames taken are
+  // start, start + step... up to end (frame numbers; seconds turn into
+  // them at the video's frame rate), decoded from the file's start, so
+  // each frame's number is exact
+  export async function video(file: string, input: any, signal: AbortSignal): Promise<Out> {
+    if (["ffmpeg", "ffprobe"].some((bin) => Bun.which(bin, { PATH: process.env.PATH ?? "" }) === null)) {
+      return { text: "view_video needs ffmpeg and ffprobe, which aren't installed on this device. Install ffmpeg (e.g. apt install ffmpeg / brew install ffmpeg / winget install ffmpeg) and try again.", fail: true };
+    }
+    const shown = ["stream=codec_name,width,height,avg_frame_rate,r_frame_rate,nb_frames,duration", "format=duration"].join(":");
+    const probe = await Machine.exec(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", shown, "-of", "json", file], signal);
+    if (probe.code !== 0) {
+      return { text: "ffprobe: " + probe.err.trim(), fail: true };
+    }
+    const json   = JSON.parse(probe.out.toString());
+    const stream = json.streams?.[0];
+    if (stream === undefined) {
+      return { text: "No video stream in " + input.path + ".", fail: true };
+    }
+    const fps    = Machine.rate(stream.avg_frame_rate) || Machine.rate(stream.r_frame_rate);
+    const secs   = Number(stream.duration ?? json.format?.duration);
+    const exact  = Number(stream.nb_frames) > 0;
+    const frames = exact ? Number(stream.nb_frames) : Math.round(secs * fps) || 1;
+    const [w0, h0] = [Number(stream.width), Number(stream.height)];
+    const about  = input.path + ": " + (secs > 0 ? +secs.toFixed(3) + " s, " : "") + +fps.toFixed(3) + " fps, " + (exact ? "" : "about ") + frames + " frames (0-" + (frames - 1) + "), " + w0 + "x" + h0 + ", " + stream.codec_name;
+    const sec    = input.unit === "second";
+    if (sec && !(fps > 0)) {
+      return { text: about + "\nIts frame rate is unknown: give start and end in frames.", fail: true };
+    }
+    const at     = (x: unknown, or: number) => (x === undefined || x === null ? or : Math.round(Number(x) * (sec ? fps : 1)));
+    const start  = at(input.start, 0);
+    const end    = Math.min(at(input.end, frames - 1), exact ? frames - 1 : Infinity);
+    const step   = input.step === undefined || input.step === null ? Math.max(1, Math.ceil((end - start + 1) / 16)) : Math.floor(Number(input.step));
+    const why    = !(start >= 0) ? "start must be 0 or more" : !(start < frames || !exact) ? "start is past the last frame" : !(end >= start) ? "end must not be before start" : !(step >= 1) ? "step must be 1 or more" : "";
+    if (why !== "") {
+      return { text: about + "\n" + why + ".", fail: true };
+    }
+    const count = Math.floor((end - start) / step) + 1;
+    if (count > SHEET) {
+      return { text: about + "\n" + count + " frames: at most " + SHEET + " fit one sheet. Raise step, narrow the range, or call again on consecutive ranges.", fail: true };
+    }
+    const side  = Machine.side(input.max_side);
+    const fits  = (c: number) => Math.min((side - GAP * (c + 1)) / (c * w0), (side - GAP * (Math.ceil(count / c) + 1)) / (Math.ceil(count / c) * h0));
+    let cols    = 1;
+    for (let c = 2; c <= count; c++) {
+      cols = fits(c) > fits(cols) ? c : cols;
+    }
+    const rows  = Math.ceil(count / cols);
+    const k     = Math.min(1, fits(cols));
+    const [w, h] = [Math.max(2, 2 * Math.floor((w0 * k) / 2)), Math.max(2, 2 * Math.floor((h0 * k) / 2))];
+    const font  = Math.max(10, Math.round(Math.min(h / 10, w / 8)));
+    const label = ":fontsize=" + font + ":fontcolor=white:box=1:boxcolor=black@0.6:boxborderw=2:x=2";
+    const pick  = "select='between(n," + start + "," + end + ")*not(mod(n-" + start + "," + step + "))',scale=" + w + ":" + h;
+    const marks = ",drawtext=text='%{eif\\:n*" + step + "+" + start + "\\:d}'" + label + ":y=2,drawtext=text='%{pts\\:hms}'" + label + ":y=h-th-4";
+    const grid  = ",tile=" + cols + "x" + rows + ":padding=" + GAP + ":margin=" + GAP + ":color=white";
+    const sheet = async (graph: string) => Machine.exec(["ffmpeg", "-v", "error", "-nostdin", "-i", file, "-an", "-sn", "-dn", "-vf", graph, "-frames:v", "1", "-f", "image2pipe", "-c:v", "mjpeg", "-q:v", "3", "pipe:1"], signal);
+    let made    = await sheet(pick + marks + grid);
+    let note    = "";
+    if (made.code !== 0 && /drawtext|font/i.test(made.err)) {
+      made = await sheet(pick + grid);
+      note = " (unstamped: this ffmpeg can't draw text)";
+    }
+    if (made.code !== 0 || made.out.length === 0) {
+      return { text: about + "\nffmpeg: " + (made.err.trim() || "no frame in that range"), fail: true };
+    }
+    const range = "frames " + start + "-" + (start + (count - 1) * step) + (step > 1 ? " every " + step : "");
+    const text  = about + "\nSheet: " + range + ", " + count + " frames in " + cols + "x" + rows + ", row by row" + note + ".";
+    return { text, fail: false, imgs: [{ type: "image/jpeg", data: made.out.toString("base64") }] };
+  }
+
+  // a frame rate as ffprobe gives it ("30000/1001"); 0 if none
+  export function rate(text: unknown): number {
+    const [a, b = 1] = String(text).split("/").map(Number);
+    return a > 0 && b > 0 ? a / b : 0;
+  }
+
+  // a program's output, its errors, its exit code; killed on a stop
+  export async function exec(argv: string[], signal: AbortSignal): Promise<{ out: Buffer; err: string; code: number }> {
+    const proc = Bun.spawn(argv, { stdin: "ignore", stdout: "pipe", stderr: "pipe", signal });
+    const [out, err] = await Promise.all([new Response(proc.stdout).arrayBuffer(), new Response(proc.stderr).text()]);
+    return { out: Buffer.from(out), err, code: await proc.exited };
   }
 
   // a file (named as given: shown) written whole: its diff (a new one's,

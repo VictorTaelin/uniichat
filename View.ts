@@ -236,6 +236,13 @@ const MARKS: Array<[string, number, string]> = [
 export const HEAD   = 12;
 export const IMAGES = "Images are png, jpeg, gif or webp.";
 
+// what models get of an image: scaled to FIT px at most, or as is if no
+// larger and of IMAGE bytes at most; PIXELS, the most decoded (Memory.ts
+// sends a larger one as is)
+export const FIT    = 1568;
+export const IMAGE  = 2 ** 20;
+export const PIXELS = 2 ** 28;
+
 // how a line of one tool call starts
 const TOOL = "tool: ";
 const FOLD = "The whole chat, folded into the fewest blocks.";

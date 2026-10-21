@@ -24,3 +24,20 @@ test("a shell's output is decoded whole: a char split over writes, a broken one 
   const broken = await Machine.shell(DIR, "printf 'ab\\303'", live);
   expect(broken.text).toStartWith("ab�\n(exit 0 in ");
 });
+
+test("without ffmpeg, view_video says how to get it, and read still shows an image", async () => {
+  const live = new AbortController().signal;
+  const png  = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==";
+  fs.writeFileSync(DIR + "/dot.png", Buffer.from(png, "base64"));
+  const path = process.env.PATH;
+  process.env.PATH = DIR;
+  try {
+    const video = await Machine.run({ name: "view_video", input: { path: "clip.mp4" }, cwd: "." }, DIR, live);
+    expect(video.fail).toBe(true);
+    expect(video.text).toContain("Install ffmpeg");
+    const image = await Machine.run({ name: "read", input: { path: "dot.png" }, cwd: "." }, DIR, live);
+    expect(image).toEqual({ text: "[image 1x1]", fail: false, imgs: [{ type: "image/png", data: png }] });
+  } finally {
+    process.env.PATH = path;
+  }
+});

@@ -56,7 +56,7 @@ import * as config from "./Config.ts";
 import { Disk } from "./Disk.ts";
 import { Pick } from "./Pick.ts";
 import * as names from "./Names.ts";
-import { image_kind } from "./View.ts";
+import { FIT, IMAGE, image_kind, PIXELS } from "./View.ts";
 
 // Types
 // =====
@@ -155,11 +155,8 @@ const DAY   = 864e5;
 const FDS   = 8;
 
 // Anthropic takes 32 MB a request, 20 images at full size: 20 of IMAGE
-// bytes, in base64; PIXELS, the most decoded: a larger image goes as is
+// bytes (View.ts), in base64
 const PICS   = 20;
-const FIT    = 1568;
-const IMAGE  = 2 ** 20;
-const PIXELS = 2 ** 28;
 
 // what an image's hash takes between turns of the event loop
 const PIECE = 2 ** 20;
