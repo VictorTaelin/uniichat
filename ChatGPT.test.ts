@@ -370,7 +370,7 @@ test("offered with openai-api, a model picked by name runs on the vendor it name
   const offer = { vendors: ["openai-api" as const, "openai-sub" as const], models: ["gpt-6-luna", "gpt-6.1-sol"] };
   const sub = { vendor: "openai-sub" as const, model: "gpt-6-luna", effort: "high", speed: "slow" };
   expect(Pick.move(sub, "model", offer, "gpt-6.1-sol")?.vendor).toBe("openai-sub");
-  expect(Pick.move(sub, "model", offer, "gpt-6.1-sol (openai-api)")?.vendor).toBe("openai-api");
+  expect(Pick.move(sub, "model", offer, "openai-api:gpt-6.1-sol")?.vendor).toBe("openai-api");
 });
 
 test("a server that bills won't start offering openai-sub", () => {

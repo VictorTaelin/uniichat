@@ -539,9 +539,17 @@ function term_pick(t: Term, move: Move, arg: string): void {
     term_act(t, { $: "Move", move, to: arg });
     return;
   }
-  const parts = [...new Set(Pick.options(t.v.pick, move, t.v).map(([part]) => part))];
-  const list  = parts.map((part) => (part === knob.text ? part + " (now)" : part));
-  term_note(t, move[0].toUpperCase() + move.slice(1) + "s: " + list.join(", ") + ". Pick one with /" + move + " <" + move + ">.");
+  // a model two vendors offer is listed under each (/model vendor:model
+  // picks the other's)
+  const pick  = t.v.pick;
+  const opts  = Pick.options(pick, move, t.v);
+  const now   = ([part, p]: [string, Pick]) => (part === knob.text && p.vendor === pick.vendor ? part + " (now)" : part);
+  const heads = [...new Set(opts.map(([, p]) => p.vendor))];
+  const group = (v: string) => [...new Set(opts.filter(([, p]) => p.vendor === v).map(now))].join(", ");
+  const twins = move === "model" && heads.length > 1 && opts.some(([part, p]) => Pick.twin(p.vendor, part, t.v.vendors));
+  const list  = twins ? heads.map((v) => v + ": " + group(v)).join("; ") : [...new Set(opts.map(now))].join(", ");
+  const how   = twins ? "/model <model>, or /model <vendor>:<model>" : "/" + move + " <" + move + ">";
+  term_note(t, move[0].toUpperCase() + move.slice(1) + "s: " + list + ". Pick one with " + how + ".");
 }
 
 async function term_export(t: Term): Promise<void> {

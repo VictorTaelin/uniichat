@@ -543,12 +543,13 @@ export function view_pick(v: View): Knob[] {
   if (v.pick === null) {
     return [];
   }
-  const { effort, speed } = v.pick;
-  const model = Pick.shown(v.pick, v);
+  const { model, effort, speed } = v.pick;
   const rate  = Price.rate(Pick.ask(v.pick).model);
   const price = rate === undefined ? "" : ": $" + rate.input + "/M tokens in, $" + rate.output + "/M out";
+  // a model two vendors offer: its vendor in the hint, not in its name
+  const whose = Pick.twin(v.pick.vendor, model, v.vendors) ? ", " + v.pick.vendor : "";
   return [
-    { text: model, move: "model", hint: model + price },
+    { text: model, move: "model", hint: model + whose + price },
     { text: effort, move: "effort", hint: effort + " effort: how long it thinks first; more is smarter, slower and costs more" },
     { text: speed, move: "speed", hint: speed + ": ×" + Price.times(speed) + " the price" },
   ];
