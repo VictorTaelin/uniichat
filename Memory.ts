@@ -1114,12 +1114,13 @@ ${Memory.cut(line)}| ← LIMIT`;
   }
 
   // /tree: a section for the view, and the tree as a bracket: a column
-  // for the messages, then one per level, each node beside those it
-  // merges. The leftmost column in view is packed and holds the view
-  // split or merged to its level, so the page opens on the view itself,
-  // as the model gets it; the columns right of it hold the levels above,
-  // spread to match. The script lays out the cards near the screen and
-  // fetches their text (/api/tree): a chat has thousands
+  // for the messages, then one per level, each node beside the two it
+  // merges. The leftmost column in view is packed: each stretch of the
+  // chat as the node of that level covering it (where none is built yet,
+  // the highest below that is: the chat's end); the columns right of it
+  // hold the levels above, spread to match. It opens on the view's top
+  // level, the view's nodes marked. The script lays out the cards near
+  // the screen and fetches their text (/api/tree): a chat has thousands
   export function* page(mem: Memory): Generator<string> {
     const esc   = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;");
     // the nodes built: those whose slot in the tree's index has a day
@@ -1133,30 +1134,33 @@ ${Memory.cut(line)}| ← LIMIT`;
 <style>
 body { height: 100dvh; display: flex; flex-direction: column; }
 header > a { display: grid; place-items: center; text-decoration: none; } header > .here { background: var(--ink); color: var(--paper); }
-#back { margin-left: auto; } header > button:disabled { opacity: .4; cursor: default; }
+#back { margin-left: 6px; } header > button:disabled { opacity: .4; cursor: default; }
+.top { padding: 10px 20px 0; } .back { display: inline-block; padding: 8px 0; font-size: 14px; color: var(--mid); text-decoration: none; } .back:hover { color: var(--ink); }
 section { display: none; flex: 1; overflow: auto; padding: 0 20px 20px; outline: none; font: 15px/1.55 var(--serif); text-wrap: pretty; } section:target { display: block; }
 h4 { margin: .8em 0 .2em; font: 600 11.5px/1.5 var(--sans); color: var(--mid); } pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
 #TREE { --g: 2em; gap: var(--g); scroll-snap-type: x mandatory; scroll-padding: 0 20px; } #TREE:target { display: flex; }
 #TREE::after { content: ""; flex: 0 0 calc(100% - min(22em, 65vw) - var(--g)); }
 .col { flex: 0 0 min(22em, 65vw); position: relative; scroll-snap-align: start; }
 .col h3 { position: sticky; top: 0; z-index: 2; margin: 0; height: 3em; font: 600 .8em/3em var(--sans); letter-spacing: .06em; color: var(--mid); background: var(--paper); cursor: pointer; margin-right: calc(0px - var(--g)); } .col h3:hover { color: var(--ink); }
-.view h3::after { content: " · VIEW"; }
 .s { position: absolute; left: 0; right: 0; padding: 0 14px .7em; border-radius: 10px; background: var(--block); } .s h4 { margin-top: .7em; }
-.s:focus-visible { outline: 2px solid var(--ink); outline-offset: -2px; } .wait { overflow: hidden; }
+.s:focus-visible { outline: 2px solid var(--ink); outline-offset: -2px; } .wait { overflow: hidden; } .s.in { box-shadow: inset 3px 0 var(--mid); } .s.in h4::after { content: " · IN VIEW"; }
 .up::after { content: ""; position: absolute; left: 100%; width: calc(var(--g) / 2); top: 50%; border-top: 1px solid var(--frame); }
 .dn::before { content: ""; position: absolute; right: 100%; width: calc(var(--g) / 2); top: var(--t); height: calc(var(--h) + 1px); border-left: 1px solid var(--frame); background: linear-gradient(var(--frame), var(--frame)) 0 var(--m) / 100% 1px no-repeat; }
 .s.user pre, .s.unii pre { font: 16px/1.55 var(--sans); } .s.tool pre, .s.echo pre { font: 12.5px/1.5 var(--mono); }
-@media (max-width: 600px) { section { padding: 0 14px 14px; } #TREE { scroll-padding: 0 14px; } }
+@media (max-width: 600px) { section { padding: 0 14px 14px; } #TREE { scroll-padding: 0 14px; } .top { padding: 4px 14px 0; } }
 </style>
 <noscript><style>#VIEW { display: block; }</style></noscript>
 <script>["#VIEW", "#TREE"].includes(location.hash) || (location.hash = "TREE");</script>
-<header><a href="/">Chat</a><a href="#VIEW">VIEW</a><a href="#TREE">TREE</a><button id=back>‹</button><button id=next>›</button></header>
+<header><a class="brand" href="/"><i class="mark"></i><span>UniiChat</span></a><a href="#VIEW">VIEW</a><a href="#TREE">TREE</a><button id=back>‹</button><button id=next>›</button></header>
+<nav class="top"><a class="back" href="/">← Chat</a></nav>
 <section id="VIEW">`;
     yield view.map(({ h, t }) => "<h4>" + esc(h) + "</h4><pre>" + esc(t) + "</pre>").join("");
     yield '</section>\n<section id="TREE">' + ["ROOT", ...levels.map((l) => "LVL" + l)].map((name) => "<div class=col><h3 tabindex=0>" + name + "</h3></div>").join("");
     // F, the leftmost column's cards: the view, its nodes above level L
-    // split down to it (a node not built: its message), those of the
-    // levels above the view's top built merged up; each card's height is
+    // split down to it (a node not built: its message), then merged up
+    // to L where built, so each column holds one level and a node
+    // joins its two halves (the view, of nodes of many levels, is
+    // marked, and whole under VIEW); each card's height is
     // as last measured (else its level's mean), those of a column right
     // of it as theirs need: a node is set mid its cards, the last one's
     // slot grown till it fits; the message at the top of the screen
@@ -1166,18 +1170,18 @@ h4 { margin: .8em 0 .2em; font: 600 11.5px/1.5 var(--sans); color: var(--mid); }
 <script>
 const N = ${mem.count}, B = ${JSON.stringify(has)}, V = ${JSON.stringify(mem.view.parts.map((part) => [part.l, part.i]))};
 const tree = document.getElementById("TREE"), cols = [...tree.children], em = parseFloat(getComputedStyle(tree).fontSize), G = .75 * em, Y = 2.6 * em;
-const T = B.length - 1, vt = Math.max(-1, ...V.map((p) => p[0]));
+const T = B.length - 1, vt = Math.max(-1, ...V.map((p) => p[0])), seen = new Set(V.map((p) => p.join(".")));
 const has = (l, i) => (l < 0 ? i < N : B[l][i] === "1"), at = (l, i) => i * 2 ** Math.max(0, l), len = (l) => 2 ** Math.max(0, l);
 const lo = (list, ok) => { let a = 0, z = list.length; while (a < z) { const m = (a + z) >> 1; ok(list[m]) ? (z = m) : (a = m + 1); } return a; };
 const step = () => cols[1].offsetLeft - cols[0].offsetLeft || 1;
 const H = new Map(), got = new Map(), shown = new Map();
-let mean = {}, L = vt, plan, moving = 0, again = 0, wait, width = 0, started = false;
+let mean = {}, L = vt, plan, moving = 0, again = 0, wait, width = 0, started = false, left = 0, sliding = false, done = () => {}, goal = null;
 const height = (l, i) => H.get(l + "." + i) ?? (mean[l] ? mean[l][0] / mean[l][1] : 6 * em);
 const frontier = (L) => {
   let F = [];
   const down = (l, i) => (l <= L && has(l, i) ? F.push([l, i]) : l <= 0 ? F.push([-1, i]) : (down(l - 1, 2 * i), down(l - 1, 2 * i + 1)));
   V.forEach(([l, i]) => down(l, i));
-  for (let l = vt + 1; l <= L; l++) {
+  for (let l = 0; l <= L; l++) {
     const up = [];
     for (let k = 0; k < F.length; ) {
       const a = at(...F[k]);
@@ -1213,13 +1217,20 @@ const layout = (L) => {
   const cards = cols.map(() => []);
   F.forEach(([l, i], k) => cards[L + 1].push([l, i, P[k] + (slot[k] - G - height(l, i)) / 2, height(l, i), k, k + 1]));
   ups.forEach((list, l) => list.forEach(([i, a, b]) => cards[l + 1].push([l, i, (P[a] + P[b] - G - height(l, i)) / 2, height(l, i), a, b])));
+  // then its lines, and from where to where it and they reach: a card is
+  // drawn while either is near the screen, so a line never goes missing
+  // for its card being far
+  cards.forEach((list, c) => list.forEach((q, x) => {
+    const v = link(cards, c, x);
+    q.push(v, v[2] < 0 ? q[2] : Math.min(q[2], q[2] + v[1]), v[2] < 0 ? q[2] + q[3] : Math.max(q[2] + q[3], q[2] + v[1] + v[2] + 1));
+  }));
   return { F, A, P, slot, find, cards, total: P[F.length] };
 };
 // the lines of card x of column c: to its parent (1) or not (0), then the
 // one joining its children, from its top: where it starts, its length,
 // where it meets this card
-const link = (c, x) => {
-  const [l, i, y, h, a, b] = plan.cards[c][x], mid = y + h / 2, kids = plan.cards[c - 1] ?? [];
+const link = (cards, c, x) => {
+  const [l, i, y, h, a, b] = cards[c][x], mid = y + h / 2, kids = cards[c - 1] ?? [];
   const up = c <= T && has(c, Math.floor(at(l, i) / 2 ** c)) ? 1 : 0;
   const k0 = kids[lo(kids, (q) => q[4] >= a)], k1 = kids[lo(kids, (q) => q[4] >= b) - 1];
   if (!k0 || k0[4] !== a || !k1) return [up, 0, -1, 0];
@@ -1228,7 +1239,7 @@ const link = (c, x) => {
 };
 const make = (l, i) => {
   const s = document.createElement("div"), x = got.get(l + "." + i);
-  s.className = "s wait";
+  s.className = seen.has(l + "." + i) ? "s wait in" : "s wait";
   s.tabIndex = 0;
   s.li = [l, i];
   s.append(document.createElement("h4"), document.createElement("pre"));
@@ -1244,9 +1255,17 @@ const fill = (s, x) => {
   s.lastChild.textContent = x.t;
   s.fresh = true;
 };
-// the cards on screen (and half a screen around) without text: theirs
+// the texts not here yet of the cards drawn, then of those within four
+// screens, in the columns on screen: a quick scroll finds them here
+const near = () => [Math.floor(tree.scrollLeft / step()), (tree.scrollLeft + tree.clientWidth) / step()];
 const load = () => {
-  const keys = [...shown.keys()].filter((k) => !got.has(k));
+  const y = tree.scrollTop, sh = tree.clientHeight, [c0, c1] = near(), want = [...shown.keys()];
+  plan.cards.forEach((list, c) => {
+    for (let x = c < c0 || c > c1 ? list.length : lo(list, (q) => q[8] >= y - 4 * sh); x < list.length && list[x][7] <= y + 5 * sh; x++) {
+      want.push(list[x][0] + "." + list[x][1]);
+    }
+  });
+  const keys = [...new Set(want)].filter((k) => !got.has(k));
   for (let j = 0; j < keys.length; j += 200) {
     const part = keys.slice(j, j + 200), put = (list) => {
       part.forEach((k, x) => (got.set(k, list[x] ?? { h: k, t: "(none)" }), shown.has(k) && fill(shown.get(k), got.get(k))));
@@ -1258,14 +1277,12 @@ const load = () => {
 };
 // the cards near y; e < 1: on the way from \`old\`, their lines' too
 const draw = (y = tree.scrollTop, e = 1, old) => {
-  const p = plan, sh = tree.clientHeight, keep = new Set();
-  const c0 = Math.floor(tree.scrollLeft / step()), c1 = (tree.scrollLeft + tree.clientWidth) / step();
+  const p = plan, sh = tree.clientHeight, keep = new Set(), [c0, c1] = near();
   cols.forEach((col, c) => {
     col.style.height = Y + Math.max(p.total, e < 1 ? old.total : 0) + "px";
-    col.classList.toggle("view", L === vt && c === L + 1);
     const list = p.cards[c];
-    for (let x = c < c0 || c > c1 ? list.length : lo(list, (q) => q[2] + q[3] >= y - sh / 2); x < list.length && list[x][2] <= y + 1.5 * sh; x++) {
-      const [l, i, t, h] = list[x], k = l + "." + i, [up, ...v] = link(c, x), w = e < 1 && old.get(k);
+    for (let x = c < c0 || c > c1 ? list.length : lo(list, (q) => q[8] >= y - sh / 2); x < list.length && list[x][7] <= y + 1.5 * sh; x++) {
+      const [l, i, t, h, , , [up, ...v]] = list[x], k = l + "." + i, w = e < 1 && old.get(k);
       const s = shown.get(k) ?? make(l, i);
       s.parentNode !== col && col.append(s);
       shown.set(k, s);
@@ -1310,9 +1327,11 @@ const place = (a, p) => {
   const k = p.find(Math.floor(a.m)), [l, i] = p.F[k];
   return p.P[k] + (l + "." + i === a.key ? Math.min(a.d, p.slot[k]) : ((a.m - p.A[k]) / len(l)) * p.slot[k]);
 };
+// (not while sliding to another column: setting scrollTop would stop it;
+// its end packs anew)
 const redo = () => {
   again = 0;
-  if (!moving) {
+  if (!moving && !sliding) {
     const a = anchor();
     plan = layout(L);
     draw(place(a, plan));
@@ -1320,7 +1339,9 @@ const redo = () => {
 };
 const pack = () => {
   const to = Math.max(-1, Math.min(T, Math.round(tree.scrollLeft / step()) - 1));
-  if (to === L) return moving || draw();
+  sliding = false;
+  goal = null;
+  if (to === L) return moving || redo();
   const a = anchor(), old = new Map([...shown].map(([k, s]) => [k, s.v])), y0 = tree.scrollTop, t0 = performance.now(), me = ++moving;
   old.total = plan.total;
   L = to;
@@ -1329,14 +1350,20 @@ const pack = () => {
   const frame = (now) => {
     const e = Math.min(1, (now - t0) / 300), f = 1 - (1 - e) ** 3;
     if (me === moving) {
-      e < 1 ? (draw(y0 + (y1 - y0) * f, f, old), requestAnimationFrame(frame)) : ((moving = 0), draw(y1));
+      e < 1 ? (draw(y0 + (y1 - y0) * f, f, old), requestAnimationFrame(frame)) : done();
     }
   };
+  done = () => me === moving && ((moving = 0), draw(y1));
   requestAnimationFrame(frame);
 };
 const end = "onscrollend" in tree;
 tree.addEventListener(end ? "scrollend" : "scroll", () => { clearTimeout(wait); wait = setTimeout(pack, end ? 0 : 150); });
-tree.addEventListener("scroll", () => moving || draw());
+// a slide the user starts mid-ease ends the ease where it is (setting
+// scrollTop would stop the slide)
+tree.addEventListener("scroll", () => {
+  tree.scrollLeft !== left && ((left = tree.scrollLeft), (sliding = true), (moving = 0));
+  moving || draw();
+});
 plan = layout(L);
 onload = onresize = onhashchange = () => {
   back.hidden = next.hidden = location.hash !== "#TREE";
@@ -1355,11 +1382,19 @@ onload = onresize = onhashchange = () => {
   }
 };
 onhashchange();
-back.onclick = () => tree.scrollBy({ left: -step(), behavior: "smooth" });
-next.onclick = () => tree.scrollBy({ left: step(), behavior: "smooth" });
+// to column c: the ease under way done first, as it sets scrollTop; a
+// click while sliding counts from where the slide goes
+const slide = (c) => {
+  goal = Math.max(0, Math.min(cols.length - 1, c));
+  done();
+  tree.scrollTo({ left: goal * step(), behavior: "smooth" });
+};
+const here = () => goal ?? Math.round(tree.scrollLeft / step());
+back.onclick = () => slide(here() - 1);
+next.onclick = () => slide(Math.min(here() + 1, Math.ceil((tree.scrollWidth - tree.clientWidth) / step())));
 const go = (t) => {
   const col = t.closest("h3")?.parentNode;
-  col && tree.scrollTo({ left: col.offsetLeft - cols[0].offsetLeft, behavior: "smooth" });
+  col && slide(cols.indexOf(col));
 };
 tree.onclick = (e) => go(e.target);
 tree.onkeydown = (e) => {
