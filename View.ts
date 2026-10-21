@@ -13,7 +13,7 @@ import type { Kind, Vendor } from "./AskAI.ts";
 import { topup } from "./Import.ts";
 import * as Call from "./Call.ts";
 import * as Md from "./Md.ts";
-import { LABELS, type Move, Pick } from "./Pick.ts";
+import { LABELS, type Fall, type Move, Pick } from "./Pick.ts";
 import { Price } from "./Price.ts";
 import { GLYPH, WHO } from "./Theme.ts";
 
@@ -55,7 +55,7 @@ export const OPENING = 3;
 export const SUMMARIES = "summaries";
 export type Wait = string;
 
-// agents: those at work; vendors and models: those offered; bills:
+// agents: those at work; vendors, models, profiles: those offered; bills:
 // whether the server bills (Billing.ts); credits: what the user may
 // spend (null: free, or not told)
 export type State = {
@@ -65,6 +65,7 @@ export type State = {
   pick      : Pick | null;
   vendors   : Vendor[];
   models    : string[];
+  profiles? : Record<string, Fall[]>;
   bills     : boolean;
   credits   : number | null;
   importing : Progress | null;
@@ -543,11 +544,12 @@ export function view_pick(v: View): Knob[] {
   if (v.pick === null) {
     return [];
   }
-  const { model, effort, speed } = v.pick;
+  const { model, effort, speed, profile } = v.pick;
   const rate  = Price.rate(Pick.ask(v.pick).model);
   const price = rate === undefined ? "" : ": $" + rate.input + "/M tokens in, $" + rate.output + "/M out";
+  const ranks = (v.profiles?.[profile ?? ""] ?? []).map((f) => f.model.label).join(", then ");
   return [
-    { text: model, move: "model", hint: model + price },
+    profile === undefined ? { text: model, move: "model", hint: model + price } : { text: profile, move: "model", hint: profile + ": " + ranks + ", each as the one before fails" },
     { text: effort, move: "effort", hint: effort + " effort: how long it thinks first; more is smarter, slower and costs more" },
     { text: speed, move: "speed", hint: speed + ": ×" + Price.times(speed) + " the price" },
   ];

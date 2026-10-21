@@ -16,6 +16,16 @@
 // call's events, payments and end go to its sink, which moves with its
 // chat to another process (Server.ts): the call runs on where it started.
 //
+// Fallback: a call on a profile (Pick.ts) runs on its pick, then on each
+// of the profile's models (Pick.falls); one on a model alone has none.
+// A try whose vendor is out for every call (End.off: busy past its
+// tries, the account refused) and that ran no tool nor took a message
+// (End.acted) goes on with the next pick; a patient one, out of picks,
+// asks again from the first after AGAIN. A pick out is skipped for COOL
+// (the last one is asked anyway), then asked by one request till it
+// answers. As a try's answer begins it tells its sink what it runs on
+// (Run).
+//
 // Cache: a marked block ends a prefix the vendor caches. Single flight
 // (AskAI.wait), as a request is sent, once its payer let it through: one
 // whose prefix no call cached within TTL leads; one whose prefix a leader
@@ -27,7 +37,8 @@
 import { Agent } from "./Agent.ts";
 import { stream_lines } from "./Clip.ts";
 import { Machine } from "./Machine.ts";
-import type { Pick } from "./Pick.ts";
+import { Pick } from "./Pick.ts";
+import * as config from "./Config.ts";
 import type { Usage } from "./Price.ts";
 
 // Types
@@ -82,7 +93,8 @@ export type Bill = (cost: Cost, cap: number) => Promise<Grant | string>;
 // compaction's input
 export type Pay = (kind: Served, what: string, bytes?: number) => Bill;
 
-// searches: the most web searches it runs (0: no web tools)
+// searches: the most web searches it runs (0: no web tools); probe: its
+// first request goes once (its pick is DOWN)
 export type Ask = Pick & {
   system    : string;
   blocks    : Block[];
@@ -92,6 +104,7 @@ export type Ask = Pick & {
   bill?     : Bill;
   patient?  : boolean;
   yields?   : string;
+  probe?    : boolean;
 };
 
 // a prefix cached: until when; while its leader's response has not
@@ -101,20 +114,27 @@ type Cached = { until: number; ready: Promise<void> | null };
 // a request's place in single flight: its response began; it ended
 export type Flight = { begun: () => void; end: () => void };
 
+// Run: a call with fallbacks answers on `run` (by its model's label),
+// having left `from` (null: none, its own pick) as it failed, saying why
 export type Event =
   | { $: "Delta"; kind: Kind; text: string; fresh?: boolean }
-  | { $: "Entry"; kind: Kind; text: string; of?: string }; // of: the tool call it is or answers (a call is logged with its result)
+  | { $: "Entry"; kind: Kind; text: string; of?: string } // of: the tool call it is or answers (a call is logged with its result)
+  | { $: "Run"; run: Pick; from: Pick | null; why: string };
 
 // stop: who ended a call that failed (Agent.ts): the model (`fail`: it
 // answered, so the failure is its input's doing, a refusal or a stop
 // reason; asked again, it fails alike), we (`lost`: a stop, its payer's
-// refusal or cut), the vendor (`down`), or none (our setup threw)
+// refusal or cut), the vendor (`down`; off: out for every call, not
+// this request alone), or none (our setup threw); acted: it ran a tool
+// or took a message sent mid-run, which another try would do again
 export type End = {
-  ok    : boolean;
-  text  : string;
-  left  : Say[];
-  note? : string;
-  stop? : "fail" | "lost" | "down";
+  ok     : boolean;
+  text   : string;
+  left   : Say[];
+  note?  : string;
+  stop?  : "fail" | "lost" | "down";
+  off?   : boolean;
+  acted? : boolean;
 };
 
 // one try at a vendor
@@ -148,12 +168,18 @@ export const TTL: Record<Vendor, number> = {
 // the prefixes cached, by key (AskAI.keys)
 const CACHE = new Map<string, Cached>();
 
+// how long a pick out (AskAI.down) is skipped
+const COOL = 60e3;
+
+// the picks out (vendor:model, as called): till when, why
+const DOWN = new Map<string, { until: number; why: string }>();
+
 // AskAI
 // =====
 
 export namespace AskAI {
 
-  // a call: its tries, one after another (a patient one's)
+  // a call: its tries, one after another (a patient one's, a fallback's)
   export function ask(ask: Ask, on: (ev: Event) => void): Call {
     const halt = new AbortController();
     const send = (say: Say) => call.send(say);
@@ -162,19 +188,44 @@ export namespace AskAI {
       call.stop();
     };
     const [out, feed] = AskAI.tie(on, ask.bill, send, stop);
-    const tie = { ...ask, bill: feed.bill };
-    let call = AskAI.start(tie, feed.on);
+    const picks = Pick.falls(ask, ask.profile === undefined ? [] : config.OFFER.profiles?.[ask.profile] ?? []);
+    let k = AskAI.up(picks, 0);
+    // a try on picks[k], having left the one before it if any
+    const go = (): Try => {
+      const run = picks[k];
+      const from = k > 0 ? picks[k - 1] : null;
+      const why = from === null ? "" : DOWN.get(AskAI.down_key(from))?.why ?? "";
+      let heard = picks.length === 1;
+      const hear = (ev: Event) => {
+        if (!heard && (ev.$ === "Delta" || (ev.$ === "Entry" && ev.kind !== "mind"))) {
+          heard = true;
+          feed.on({ $: "Run", run: Pick.named(run), from: from && Pick.named(from), why });
+        }
+        feed.on(ev);
+      };
+      const probe = picks.length > 1 && DOWN.has(AskAI.down_key(run));
+      return AskAI.start({ ...ask, ...run, bill: feed.bill, probe }, hear);
+    };
+    let call = go();
     const run = async (): Promise<End> => {
       let end = await call.done;
       for (;;) {
-        const wait = ask.patient === true && !end.ok && end.stop !== "fail" && end.stop !== "lost";
+        const failed = !end.ok && end.stop !== "fail" && end.stop !== "lost" && !halt.signal.aborted;
+        const off = failed && end.off === true;
+        const up = !halt.signal.aborted && (end.ok || end.stop === "fail" || (end.stop === "down" && !off));
+        if (picks.length > 1 && (off || up)) {
+          AskAI.down(picks[k], off ? end.text : null);
+        }
+        const next = off && end.acted !== true && k < picks.length - 1;
+        const wait = failed && !next && ask.patient === true;
         if (wait) {
           await Machine.nap(AGAIN, halt.signal);
         }
-        if (halt.signal.aborted || !wait) {
+        if (halt.signal.aborted || (!next && !wait)) {
           return end;
         }
-        call = AskAI.start(tie, feed.on);
+        k = AskAI.up(picks, next ? k + 1 : 0);
+        call = go();
         end.left.forEach(send);
         end = await call.done;
       }
@@ -207,6 +258,32 @@ export namespace AskAI {
   // a call's end, before it ends: failed, saying `text`
   export function end(text: string): End {
     return { ok: false, text, left: [] };
+  }
+
+  // the first of picks from k on not skipped (DOWN), else the last
+  export function up(picks: Pick[], k: number): number {
+    while (k < picks.length - 1 && (DOWN.get(AskAI.down_key(picks[k]))?.until ?? 0) > Date.now()) {
+      k += 1;
+    }
+    return k;
+  }
+
+  // a pick out, saying why (skipped for COOL), or answering (why null),
+  // logged as that changes
+  export function down(run: Pick, why: string | null): void {
+    const key = AskAI.down_key(run);
+    if ((why !== null) !== DOWN.has(key)) {
+      console.error(Pick.label(Pick.named(run)) + (why !== null ? ": failed; calls go on with their fallbacks" : ": answers again"));
+    }
+    if (why !== null) {
+      DOWN.set(key, { until: Date.now() + COOL, why });
+    } else {
+      DOWN.delete(key);
+    }
+  }
+
+  export function down_key(run: Pick): string {
+    return run.vendor + ":" + run.model;
   }
 
   // Cache

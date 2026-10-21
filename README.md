@@ -85,6 +85,14 @@ also be set as the variable `UNII_<KEY>`:
 - `compactor`: what writes the summaries (default
   `claude-api:haiku-5.5:high:slow`).
 - `agents`: what subagents run on (default: the chat's pick).
+- `profiles`: named rankings of models, listed first in the model menu,
+  e.g. `{"Daily": ["claude-api:sonnet-5.5", "openai-api:gpt-6.1-sol:high"]}`
+  (each `vendor:model[:effort[:speed]]`, the pick's effort and speed if
+  unset; default none). A chat on a profile runs on its first model and
+  goes on with the next when one is out (busy past its retries, out of
+  credit or quota, a bad key), noting each switch and the way back; a
+  model picked has no fallback. `pick`, `compactor` and `agents` may name
+  a profile too.
 - `work`: the agents' working dirs on each device (default
   ~/.unii/work).
 - `rules`: a file appended to every system prompt.

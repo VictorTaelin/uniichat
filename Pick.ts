@@ -8,19 +8,25 @@
 // model every vendor's models, effort, speed (a model lacking one takes
 // its fastest below), up and down the efforts, never the speed; given a
 // value (`to`), to the pick whose part it is. A saved pick the server
-// doesn't offer gives way to def, never to a pick like it.
+// doesn't offer gives way to def, never to a pick like it. A profile
+// (config `profiles`) is a pick too, first in the model's list: a name
+// and the models it ranks; picked, it runs on its first, and a call
+// goes on with the next as one fails (AskAI.ts), each at the pick's
+// effort and speed unless it names its own. A model picked has no
+// fallback.
 
 import type { Vendor } from "./AskAI.ts";
 
 // Types
 // =====
 
-// model: by its label
+// model: by its label; profile: the profile picked (its first model)
 export type Pick = {
-  vendor : Vendor;
-  model  : string;
-  effort : string;
-  speed  : string;
+  vendor   : Vendor;
+  model    : string;
+  effort   : string;
+  speed    : string;
+  profile? : string;
 };
 
 // a key's change to the pick
@@ -29,8 +35,11 @@ export type Move = "next" | "prev" | "model" | "up" | "down" | "effort" | "speed
 // a model: as shown, as the vendor names it, its speeds
 export type Model = { label: string; id: string; speeds: string[] };
 
-// what a server offers: vendors, and models by label
-export type Offer = { vendors: Vendor[]; models: string[] };
+// what a server offers: vendors, models by label, profiles by name
+export type Offer = { vendors: Vendor[]; models: string[]; profiles?: Record<string, Fall[]> };
+
+// a profile's model: the effort and speed it names (none: the pick's)
+export type Fall = { vendor: Vendor; model: Model; effort?: string; speed?: string };
 
 // Constants
 // =========
@@ -79,14 +88,16 @@ export namespace Pick {
   }
 
   // each with the part the move steps
-  export function options(pick: Pick, move: Move, { vendors, models }: Offer): Array<[string, Pick]> {
+  export function options(pick: Pick, move: Move, offer: Offer): Array<[string, Pick]> {
     const speeds = Pick.model(pick.vendor, pick.model)?.speeds ?? [];
-    const all = (vs: Vendor[]) => Pick.models(vs, models).map(([v, m]): [string, Pick] => [m.label, Pick.on(pick, v, m)]);
+    const { profile: _, ...plain } = pick;
+    const all = Pick.models(offer.vendors, offer.models).map(([v, m]): [string, Pick] => [m.label, Pick.on(plain, v, m)]);
+    const profiles = Object.keys(offer.profiles ?? {}).map((name): [string, Pick] => [name, Pick.profile(name, offer, pick.effort, pick.speed)!]);
     switch (move) {
       case "next":
       case "prev":
       case "model": {
-        return all(vendors);
+        return [...profiles, ...all];
       }
       case "up":
       case "down":
@@ -102,7 +113,7 @@ export namespace Pick {
   export function move(pick: Pick, move: Move, offer: Offer, to?: string): Pick | null {
     const list = Pick.options(pick, move, offer);
     const n    = list.length;
-    const at   = list.findIndex(([, p]) => Pick.label(p) === Pick.label(pick));
+    const at   = list.findIndex(([, p]) => Pick.label(p) === Pick.label(pick) && p.profile === pick.profile);
     const d    = move === "prev" || move === "down" ? -1 : 1;
     const ends = move === "up" || move === "down";
     const next = ends ? Math.max(0, Math.min(n - 1, at + d)) : (at + d + n) % n;
@@ -121,8 +132,42 @@ export namespace Pick {
     return { ...pick, model: model?.id ?? pick.model };
   }
 
-  // as the chat runs it; null: none
+  // a pick as a call took it (Pick.ask), by its model's label again
+  export function named(run: Pick): Pick {
+    const model = MODELS[run.vendor].find((m) => m.id === run.model);
+    return { ...run, model: model?.label ?? run.model };
+  }
+
+  // what a call (as it takes its pick) runs on: its pick, then each
+  // fallback not on a model before it, as a call takes it: picks only,
+  // never the call's prompt or images (a Run event, which names them,
+  // may go to another process)
+  export function falls(run: Pick, falls: Fall[]): Pick[] {
+    const own = { vendor: run.vendor, model: run.model, effort: run.effort, speed: run.speed };
+    const list = falls.map((f) => {
+      const on = Pick.on(own, f.vendor, f.model);
+      return Pick.ask({ ...on, effort: f.effort ?? on.effort, speed: f.speed ?? on.speed });
+    });
+    return [own, ...list].filter((p, k, all) => all.findIndex((q) => q.vendor === p.vendor && q.model === p.model) === k);
+  }
+
+  // a profile as picked: its first model, at the effort and speed given
+  // unless it names its own (a speed the model lacks: its fastest below);
+  // null: none of that name
+  export function profile(name: string, offer: Offer, effort: string, speed: string): Pick | null {
+    const first = Object.hasOwn(offer.profiles ?? {}, name) ? offer.profiles![name][0] : undefined;
+    if (first === undefined) {
+      return null;
+    }
+    const on = Pick.on({ vendor: first.vendor, model: first.model.label, effort, speed }, first.vendor, first.model);
+    return { ...on, effort: first.effort ?? effort, speed: first.speed ?? on.speed, profile: name };
+  }
+
+  // as the chat runs it (a profile's: as the config has it now); null: none
   export function read(x: any, offer: Offer): Pick | null {
+    if (x.profile !== undefined) {
+      return typeof x.profile === "string" && EFFORTS.includes(x.effort) ? Pick.profile(x.profile, offer, x.effort, String(x.speed)) : null;
+    }
     const model = offer.vendors.includes(x.vendor) && offer.models.includes(x.model) ? Pick.model(x.vendor, x.model) : undefined;
     if (model === undefined || !EFFORTS.includes(x.effort) || !model.speeds.includes(x.speed)) {
       return null;

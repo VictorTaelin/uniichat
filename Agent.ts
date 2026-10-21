@@ -4,10 +4,11 @@
 // OpenAI.ts) shapes requests and reads streams. Each step sends every
 // item and streams one output; tool calls run in order, a message sent
 // mid-run follows the next results, and the call ends at a step with no
-// tools and nothing sent. A request goes again, TRIES times at most,
-// after its retry-after or a doubling wait, for a passing reason (`busy`:
-// no connection, a retry status, a stream error, cut short or silent for
-// the wire's `idle`), dropping what it streamed. A request that yields
+// tools and nothing sent. A request goes again, TRIES times at most (a
+// probe's first once: AskAI.ts DOWN), after its retry-after or a
+// doubling wait, for a passing reason (`busy`: no connection, a retry
+// status unless SPENT, a stream error, cut short or silent for the
+// wire's `idle`), dropping what it streamed. A request that yields
 // (an import's summary, AskAI.ts) sends nothing while one that doesn't
 // (a turn's, a chat's summary, which a turn waits on) waits on its busy
 // model: the room a busy vendor has goes to the chats first, and many
@@ -20,7 +21,8 @@
 // A call ends answered
 // (`fail`: the model's answer failed, a refusal or a stop reason: its
 // input's doing) or not: `down`, the vendor's (a refusal of the request,
-// as when the API key's credit is gone, or busy past TRIES); `lost`,
+// as when the API key's credit is gone, or busy past TRIES; `off` if
+// every call's would be: busy past TRIES, a status of OFF, SPENT); `lost`,
 // ours (a stop, its payer's refusal or cut), saying why. A vendor's why
 // (`busy`, `down`) goes to the log; the user reads only that the AI
 // service is busy, as the call's end, each retry's thought and where a
@@ -78,7 +80,7 @@ export type Use = { id: string; name: string; input: unknown };
 
 export type Entry = { kind: Kind; text: string; of?: string };
 
-// note: what it did other than asked
+// note: what it did other than asked; off: down for every call (End.off)
 export type Step = {
   out     : unknown[];
   uses    : Use[];
@@ -86,6 +88,7 @@ export type Step = {
   stop    : "done" | "tools" | "again" | "busy" | "down" | "lost" | "fail";
   why     : string;
   note    : string;
+  off?    : boolean;
 };
 
 export type Emit = (kind: Kind, text: string, fresh?: boolean) => void;
@@ -114,6 +117,12 @@ export type Wire<S> = {
 // one's credit pays for less: Bill)
 const MAX   = 128000;
 export const TRIES = 8;
+
+// a request refused for the vendor account, not for what it asks: by its
+// status (a bad key, billing, no access, no such model) or its error
+// (the credit or quota gone, Anthropic's a 400, OpenAI's a 429)
+const OFF   = [401, 402, 403, 404];
+const SPENT = /insufficient_quota|billing_hard_limit_reached|credit balance is too low/i;
 
 // what a call the vendor never answered says
 const BUSY  = "the AI service is busy or unavailable right now";
@@ -182,6 +191,7 @@ export namespace Agent {
       if (step.stop === "down" || step.stop === "lost" || step.stop === "fail") {
         end.text ||= step.stop === "down" ? BUSY : step.why;
         end.stop = step.stop;
+        end.off = step.off;
         return;
       }
       items.push({ $: "Turn", out: step.out });
@@ -194,6 +204,7 @@ export namespace Agent {
         if (signal.aborted) {
           return;
         }
+        end.acted = true;
         const out = await Agent.use(run, tools, use);
         on({ $: "Entry", kind: "echo", text: (out.fail ? "error: " : "") + out.text, of: use.id });
         backs.push({ id: use.id, out });
@@ -209,6 +220,7 @@ export namespace Agent {
         end.text = text;
         return;
       }
+      end.acted ||= says.length > 0;
       for (const say of says) {
         on({ $: "Entry", kind: "user", text: say.text });
       }
@@ -234,6 +246,7 @@ export namespace Agent {
     const signal = run.abort.signal;
     const model = run.ask.model;
     const own = run.ask.yields === undefined ? model : model + " " + run.ask.yields;
+    const tries = run.ask.probe === true && items.length === 1 ? 1 : TRIES;
     let asking = false;
     try {
       for (let k = 1; !signal.aborted; k++) {
@@ -249,8 +262,8 @@ export namespace Agent {
         if (step.stop === "down") {
           console.error(model + ": " + step.why.slice(0, 300));
         }
-        if (step.stop !== "busy" || k >= TRIES) {
-          return step.stop === "busy" ? { ...step, stop: "down" } : step;
+        if (step.stop !== "busy" || k >= tries) {
+          return step.stop === "busy" ? { ...step, stop: "down", off: true } : step;
         }
         if (!asking && own !== model && (ROOMS.get(own)?.busy ?? 0) > 0) {
           continue;
@@ -369,8 +382,11 @@ export namespace Agent {
         signal  : run.ask.bill ? idle.signal : AbortSignal.any([run.abort.signal, idle.signal]),
         timeout : false,
       } as RequestInit);
-      const why = res.ok && res.body ? "" : "HTTP " + res.status + ": " + Agent.reason(await res.text());
-      step = why ? Agent.fail(why, [], Agent.passing(res) ? "busy" : "down") : await Agent.stream(wire, run, res.body!, timer, seen, st, flight.begun, read);
+      const text = res.ok && res.body ? null : await res.text();
+      const spent = text !== null && SPENT.test(text);
+      const why = "HTTP " + res.status + ": " + Agent.reason(text ?? "");
+      const off = spent || OFF.includes(res.status);
+      step = text !== null ? { ...Agent.fail(why, [], Agent.passing(res) && !spent ? "busy" : "down"), off } : await Agent.stream(wire, run, res.body!, timer, seen, st, flight.begun, read);
     } catch (err: any) {
       step = Agent.fail(err.message, [], "busy");
     }
