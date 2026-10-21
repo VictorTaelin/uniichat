@@ -25,15 +25,18 @@
 // effort and our MCP URL are set per call. A call takes a free lane of
 // its key, else starts one, else ends the longest unused lane of another
 // key for one, else waits, chat turns first, then subagents, then
-// summaries and imports (`rank`); a stop while it waits ends it. Chat
-// turns and subagents hold at most LANES lanes (config `claude_lanes`);
-// summaries and imports may run one more, so the summaries a turn waits
-// on (a spawn waits for the chat's view) always run: at most LANES + 1
-// Claude Codes, counting those still ending. A lane unused IDLE ends;
-// one that dies is dropped (its call tried once more on a fresh lane, if
-// nothing came out yet); one stopped while being set for its call ends;
-// all end at a sign-in or out (`unii claude` marks it) and with the
-// server.
+// summaries, then imports (`rank`); a stop while it waits ends it.
+// `claude_lanes` (LANES, at least 2) is the most Claude Codes running at
+// once, all told: those still ending count till they exit, and nothing
+// ever starts one more. One of them is the summaries' (and imports'):
+// chat turns and subagents hold at most LANES - 1, summaries one, so the
+// summaries a turn waits on (a spawn waits for the chat's view) always
+// get to run. A call that finds every lane it may use busy waits for one,
+// however long; nothing it waits on is ended for it. A lane unused IDLE
+// ends; one that dies is dropped (its call tried once more on a fresh
+// lane, if nothing came out yet); one stopped while being set for its
+// call ends; all end at a sign-in or out (`unii claude` marks it) and
+// with the server.
 
 import * as child from "node:child_process";
 import * as crypto from "node:crypto";
@@ -134,7 +137,7 @@ class Stopped extends Error {}
 // =====
 
 // lanes: those running; ending: those ended, not exited yet (they count
-// toward the ceiling); most: LANES (a test sets its own)
+// toward the most); most: LANES (a test sets its own)
 const POOL = { lanes: [] as Lane[], ending: new Set<Lane>(), waits: [] as Wait[], n: 0, most: LANES, bin: null as Promise<string> | null, sdk: null as Promise<Sdk> | null, hooked: false };
 
 // ClaudeSub
@@ -332,10 +335,11 @@ export namespace ClaudeSub {
   }
 
   // a call's place in line: a chat turn (or goal check) 0, a subagent's
-  // 1, a summary's or an import's 2 (Tools.at: the master's URL ends
-  // /main; a summary is patient)
+  // 1, a summary's 2, an import's 3 (Tools.at: the master's URL ends
+  // /main; a summary is patient; an import's also yields). 2 and 3 run on
+  // the summaries' lane
   export function rank(ask: Ask): number {
-    return ask.patient ? 2 : ask.server === "" || ask.server.endsWith("/main") ? 0 : 1;
+    return ask.patient ? (ask.yields === undefined ? 2 : 3) : ask.server === "" || ask.server.endsWith("/main") ? 0 : 1;
   }
 
   // the lanes running, those ended not exited yet, and the calls waiting
@@ -344,8 +348,11 @@ export namespace ClaudeSub {
     return { lanes: POOL.lanes.length, busy: POOL.lanes.filter((l) => l.busy).length, ending: POOL.ending.size, waits: POOL.waits.length };
   }
 
-  // the ceiling set (for tests)
+  // the most set (for tests; below 2 refused, as config.ts does)
   export function ceiling(most: number): void {
+    if (!(most >= 2)) {
+      throw new Error(config.LANES_LOW);
+    }
     POOL.most = most;
   }
 
@@ -380,21 +387,24 @@ export namespace ClaudeSub {
   }
 
   // the waiting calls given lanes, first in line first, each that can be:
-  // a chat turn's or subagent's only while they hold fewer than the
-  // ceiling (the one more is the summaries'); a free lane of its key, else
-  // a new one if fewer than the ceiling + 1 run or end, else the longest
-  // unused lane ended (one at a time) to make room once it exits
+  // a chat turn or subagent while they hold fewer than most - 1 lanes, a
+  // summary or import while none holds the summaries' lane; then a free
+  // lane of its key, else a new one if fewer than most run or end, else
+  // the longest unused lane ended (one at a time) to make room once it
+  // exits. Never more than most, and never stuck: when a call may run,
+  // at most most - 1 lanes are busy, so one is free, unused or ending
   export function grant(): void {
     const mark = ClaudeSub.signed();
     POOL.lanes.filter((l) => !l.busy && l.mark !== mark).forEach(ClaudeSub.close);
     POOL.waits.sort((a, b) => a.rank - b.rank || a.n - b.n);
     for (const wait of [...POOL.waits]) {
-      const held = POOL.lanes.filter((l) => l.busy && l.rank < 2).length;
-      if (wait.rank < 2 && held >= POOL.most) {
+      const sums = wait.rank >= 2;
+      const held = POOL.lanes.filter((l) => l.busy && (l.rank >= 2) === sums).length;
+      if (held >= (sums ? 1 : POOL.most - 1)) {
         continue;
       }
       let lane = POOL.lanes.find((l) => !l.busy && l.key === wait.key);
-      if (lane === undefined && POOL.lanes.length + POOL.ending.size > POOL.most) {
+      if (lane === undefined && POOL.lanes.length + POOL.ending.size >= POOL.most) {
         const old = POOL.lanes.filter((l) => !l.busy).sort((a, b) => a.at - b.at)[0];
         if (POOL.ending.size === 0 && old !== undefined) {
           ClaudeSub.close(old);
@@ -474,7 +484,7 @@ export namespace ClaudeSub {
   }
 
   // a lane ended: its Claude Code stopped; till it exits (killed if it
-  // takes KILL), it still counts toward the ceiling
+  // takes KILL), it still counts toward the most
   export function close(lane: Lane): void {
     if (lane.dead) {
       return;

@@ -6,11 +6,12 @@
 // always). And its lanes, on a fake SDK whose "Claude Code" (a real
 // process) answers with all it was told since its last /clear: no call
 // sees another's, a lane serves any call of its exact prompt (whoever's),
-// chat turns and subagents hold no more than the ceiling and summaries
-// get one more (so a turn waiting on a summary never waits forever), one
-// ending counts till it exits, chat turns go first, a stop while waiting
-// or while a lane is being set ends at once, a lane that dies is
-// replaced, one unused ends, a sign-in or out ends them. And the copies of
+// never more Claude Codes than claude_lanes, one ending counted till it
+// exits; one of them the summaries' (so a turn waiting on a summary
+// never waits forever, and nothing is ended for it), chat turns first,
+// imports last; below 2 refused; a stop while waiting or while a lane is
+// being set ends at once, a lane that dies is replaced, one unused ends,
+// a sign-in or out ends them. And the copies of
 // the carried binary another unii still uses are kept; a model two
 // vendors offer keeps its name, its two picks apart.
 
@@ -20,7 +21,7 @@ import * as os from "node:os";
 
 process.env.UNII_DIR = fs.mkdtempSync(os.tmpdir() + "/unii-claude-sub-");
 process.env.UNII_CLAUDE = "/bin/true";
-process.env.UNII_CLAUDE_LANES = "2";
+process.env.UNII_CLAUDE_LANES = "3";
 process.env.UNII_CLAUDE_IDLE = "1";
 const { ClaudeSub } = await import("./ClaudeSub.ts");
 const { Pick, LABELS } = await import("./Pick.ts");
@@ -30,12 +31,13 @@ const { view_pick } = await import("./View.ts");
 // its spawner to: it exits fake.linger s after its stdin closes), answering
 // each message with its system prompt and what it was told since its last
 // /clear; "SLOW" runs till interrupted; "AWAIT" till fake.gate opens (a
-// turn waiting on something, as a spawn waits on summaries); "DIE" (once)
+// turn waiting on something, as a spawn waits on summaries); "HOLD" till
+// fake.hold opens; "DIE" (once)
 // ends the process; fake.stuck: /clear never answered; an MCP URL with
 // "HANG": setMcpServers never answers
 const procs = new Set<any>();
 const fake = {
-  spawned: 0, most: 0, died: false, linger: 0, stuck: false, gate: Promise.withResolvers<void>(),
+  spawned: 0, most: 0, died: false, linger: 0, stuck: false, gate: Promise.withResolvers<void>(), hold: Promise.withResolvers<void>(),
   get live() {
     procs.forEach((p) => (p.exitCode !== null || p.signalCode !== null) && procs.delete(p));
     return procs.size;
@@ -86,6 +88,9 @@ function query({ prompt, options }: any) {
       }
       if (text.includes("AWAIT")) {
         await fake.gate.promise;
+      }
+      if (text.includes("HOLD")) {
+        await fake.hold.promise;
       }
       emit({ type: "result", subtype: "success", is_error: false, result: JSON.stringify({ system: options.systemPrompt, told }) });
     }
@@ -173,15 +178,21 @@ test("two users, the same system prompt: one lane; another SOUL: its own; a summ
   expect(ClaudeSub.pool().lanes).toBe(2);
 });
 
-test("chat turns and subagents hold no more than the ceiling, summaries one more; chat turns first; a stop while waiting ends the wait", async () => {
+test("never more than claude_lanes Claude Codes; one is the summaries'; chat turns first; a stop while waiting ends the wait", async () => {
   ClaudeSub.end();
   await Bun.sleep(100);
   fake.most = fake.live;
   const x = ClaudeSub.ask(asked("X", "SLOW"), () => {});
   const y = ClaudeSub.ask(asked("Y", "SLOW", { server: "http://h/k/Agent1" }), () => {});
+  await tick();
+  // chat turns and subagents hold 2 of 3: a third waits, the last lane
+  // stays the summaries'
+  const third = ClaudeSub.ask(asked("T", "third", { server: "http://h/k/Agent9" }), () => {});
+  await tick();
+  expect(ClaudeSub.pool()).toMatchObject({ lanes: 2, busy: 2, waits: 1 });
   const s1 = ClaudeSub.ask(asked("Z", "SLOW", { patient: true }), () => {});
   await tick();
-  expect(ClaudeSub.pool()).toMatchObject({ lanes: 3, busy: 3, waits: 0 });
+  expect(ClaudeSub.pool()).toMatchObject({ lanes: 3, busy: 3, waits: 1 });
   const order: string[] = [];
   const sum = ClaudeSub.ask(asked("Z", "summary", { patient: true }), () => {});
   const gone = ClaudeSub.ask(asked("Z", "summary 2", { patient: true }), () => {});
@@ -190,55 +201,87 @@ test("chat turns and subagents hold no more than the ceiling, summaries one more
   sum.done.then(() => order.push("summary"));
   sub.done.then(() => order.push("subagent"));
   chat.done.then(() => order.push("chat"));
+  third.done.then(() => order.push("third"));
   await tick();
-  expect(ClaudeSub.pool()).toMatchObject({ lanes: 3, busy: 3, waits: 4 });
+  expect(ClaudeSub.pool()).toMatchObject({ lanes: 3, busy: 3, waits: 5 });
   gone.stop();
   expect((await gone.done).ok).toBe(false);
-  expect(ClaudeSub.pool().waits).toBe(3);
+  expect(ClaudeSub.pool().waits).toBe(4);
   x.stop();
-  expect((await x.done).ok).toBe(false);
   expect(await said(chat)).toEqual({ system: "W", told: ["chat"] });
   y.stop();
-  expect((await y.done).ok).toBe(false);
+  expect(await said(third)).toEqual({ system: "T", told: ["third"] });
   expect(await said(sub)).toEqual({ system: "V", told: ["subagent"] });
   s1.stop();
   expect(await said(sum)).toEqual({ system: "Z", told: ["summary"] });
-  expect(order).toEqual(["chat", "subagent", "summary"]);
+  expect(order).toEqual(["chat", "third", "subagent", "summary"]);
   expect(fake.most).toBeLessThanOrEqual(3);
   expect(fake.live).toBeLessThanOrEqual(3);
 });
 
-// a turn holding a lane waits (as Tools.spawn waits on Memory.settle) for
-// a summary queued behind it: with every chat lane held, the summary
-// still runs, at ceiling 1 and 3
-for (const most of [1, 3]) {
-  test("a turn waiting on a summary, every chat lane held: the summary runs (ceiling " + most + ")", async () => {
+test("claude_lanes below 2 is refused, not raised", async () => {
+  expect(() => ClaudeSub.ceiling(1)).toThrow("claude_lanes must be at least 2: one is kept for summaries");
+  for (const n of ["1", "0", "x"]) {
+    const run = Bun.spawnSync([process.execPath, "-e", "await import('./Config.ts')"], { cwd: import.meta.dir, env: { ...process.env, UNII_CLAUDE_LANES: n } });
+    expect(run.exitCode).not.toBe(0);
+    expect(run.stderr.toString()).toContain("claude_lanes must be at least 2: one is kept for summaries");
+  }
+  const ok = Bun.spawnSync([process.execPath, "-e", "const c = await import('./Config.ts'); console.log(c.CLAUDE_LANES)"], { cwd: import.meta.dir, env: { ...process.env, UNII_CLAUDE_LANES: "2" } });
+  expect(ok.stdout.toString().trim()).toBe("2");
+});
+
+// a compaction while every lane is busy: turns holding every chat lane
+// wait (as Tools.spawn waits on Memory.settle) for a summary queued
+// behind them, the summaries' lane itself busy with an import's. The
+// summary waits for that lane, ahead of the imports queued before it;
+// then the turns go on. Nothing is ended, nothing deadlocks, and never
+// more Claude Codes than the setting, at 2 and 3
+for (const most of [2, 3]) {
+  test("a compaction while every lane is busy waits, then runs; nothing ended, never more than " + most, async () => {
     ClaudeSub.end();
     await Bun.sleep(100);
     ClaudeSub.ceiling(most);
     fake.gate = Promise.withResolvers<void>();
+    fake.hold = Promise.withResolvers<void>();
     fake.most = fake.live;
-    const holding = Array.from({ length: most }, (_, i) => ClaudeSub.ask(asked("M", "AWAIT " + i, { server: "http://h/k/" + (i === 0 ? "main" : "Agent" + i) }), () => {}));
+    const imp = { patient: true, yields: "/imports" };
+    const importing = ClaudeSub.ask(asked("M", "HOLD import 0", imp), () => {});
+    const holding = Array.from({ length: most - 1 }, (_, i) => ClaudeSub.ask(asked("M", "AWAIT " + i, { server: "http://h/k/" + (i === 0 ? "main" : "Agent" + i) }), () => {}));
     await tick();
+    expect(ClaudeSub.pool()).toMatchObject({ lanes: most, busy: most, waits: 0 });
+    const order: string[] = [];
+    const ended: string[] = [];
+    holding.forEach((c, i) => c.done.then(() => ended.push("turn " + i)));
+    const imports = [1, 2].map((i) => ClaudeSub.ask(asked("M", "import " + i, imp), () => {}));
+    imports.forEach((c, i) => c.done.then(() => order.push("import " + (i + 1))));
     const more = ClaudeSub.ask(asked("M", "one more subagent", { server: "http://h/k/AgentX" }), () => {});
+    more.done.then(() => ended.push("subagent"));
     const sum = ClaudeSub.ask(asked("M", "the summary", { patient: true }), () => {});
+    sum.done.then(() => order.push("summary"));
+    await Bun.sleep(300);
+    expect(ClaudeSub.pool()).toMatchObject({ lanes: most, busy: most, waits: 4 });
+    fake.hold.resolve();
+    expect(await said(importing)).toEqual({ system: "M", told: ["HOLD import 0"] });
     const late = Bun.sleep(3000).then(() => "deadlock");
     expect(await Promise.race([said(sum), late])).toEqual({ system: "M", told: ["the summary"] });
-    // the extra lane is the summaries': a subagent still waits
-    expect(ClaudeSub.pool()).toMatchObject({ busy: most, waits: 1 });
+    // the turns still wait on their gate, untouched; the subagent still waits
+    expect(ended).toEqual([]);
+    expect(fake.most).toBeLessThanOrEqual(most);
     fake.gate.resolve();
     const outs = await Promise.all(holding.map(said));
     expect(outs.map((o) => o.told[0])).toEqual(holding.map((_, i) => "AWAIT " + i));
     expect(await said(more)).toEqual({ system: "M", told: ["one more subagent"] });
-    expect(fake.most).toBeLessThanOrEqual(most + 1);
-    ClaudeSub.ceiling(2);
+    await Promise.all(imports.map(said));
+    expect(order).toEqual(["summary", "import 1", "import 2"]);
+    expect(fake.most).toBeLessThanOrEqual(most);
+    ClaudeSub.ceiling(3);
   });
 }
 
-test("a lane ending counts toward the ceiling till its process exits", async () => {
+test("a lane ending counts toward claude_lanes till its process exits", async () => {
   ClaudeSub.end();
   await Bun.sleep(100);
-  ClaudeSub.ceiling(1);
+  ClaudeSub.ceiling(2);
   fake.linger = 0.5;
   fake.most = fake.live;
   await said(ClaudeSub.ask(asked("P", "one"), () => {}));
@@ -256,7 +299,7 @@ test("a lane ending counts toward the ceiling till its process exits", async () 
   await Bun.sleep(900);
   expect(ClaudeSub.pool().ending).toBe(0);
   fake.linger = 0;
-  ClaudeSub.ceiling(2);
+  ClaudeSub.ceiling(3);
 });
 
 test("a stop while a lane is being set (its /clear, its MCP server) ends the call at once, and the lane", async () => {
@@ -285,13 +328,14 @@ test("a stop while a lane is being set (its /clear, its MCP server) ends the cal
   expect(fake.spawned - before).toBe(2);
 });
 
-test("ten calls at once run on the ceiling's lanes, each seeing only its own message", async () => {
+test("ten calls at once run on claude_lanes' lanes, each seeing only its own message", async () => {
   ClaudeSub.end();
   await Bun.sleep(100);
-  const calls = Array.from({ length: 10 }, (_, i) => ClaudeSub.ask(asked("S", "n" + i, { patient: true }), () => {}));
+  fake.most = fake.live;
+  const calls = Array.from({ length: 10 }, (_, i) => ClaudeSub.ask(asked("S", "n" + i, i % 2 ? { patient: true } : { server: "http://h/k/Agent" + i }), () => {}));
   const outs = await Promise.all(calls.map(said));
   expect(outs.map((o) => o.told)).toEqual(Array.from({ length: 10 }, (_, i) => ["n" + i]));
-  expect(fake.live).toBeLessThanOrEqual(3);
+  expect(fake.most).toBeLessThanOrEqual(3);
 });
 
 test("a lane that dies before any output: the call runs on a fresh one", async () => {

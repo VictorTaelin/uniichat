@@ -38,12 +38,13 @@ export const WORKERS    = Number(config_get("workers", "0"));
 
 // claude-sub's Claude Code (ClaudeSub.ts): its config dir, where its
 // sign-in is kept; the executable ("": the one unii carries, else the
-// Agent SDK's); how many chat turns and subagents may run at once (each
-// its own; summaries get one more); how long one may sit unused before
-// it ends, in seconds
+// Agent SDK's); how many may run at once, all told (one of them kept for
+// summaries, so at least 2: below is refused); how long one may sit
+// unused before it ends, in seconds
 export const CLAUDE_SUB   = config_path(config_get("claude_sub", DIR + "/claude-sub"));
 export const CLAUDE       = config_path(config_get("claude", ""));
-export const CLAUDE_LANES = Math.max(1, Number(config_get("claude_lanes", "3")) || 3);
+export const LANES_LOW    = "config: claude_lanes must be at least 2: one is kept for summaries";
+export const CLAUDE_LANES = config_lanes(config_get("claude_lanes", "3"));
 export const CLAUDE_IDLE  = Math.max(1, Number(config_get("claude_idle", "300")) || 300);
 
 // the iOS app (ios/, Cloud.ts): its App ID, the team's then the bundle's
@@ -66,6 +67,14 @@ export const KEYS: Record<string, string> = Object.fromEntries(Object.entries(VA
 
 export function config_get(key: string, def: string): string {
   return process.env["UNII_" + key.toUpperCase()] ?? FILE[key] ?? def;
+}
+
+function config_lanes(text: string): number {
+  const n = Number(text);
+  if (!Number.isInteger(n) || n < 2) {
+    throw new Error(LANES_LOW + ": " + text);
+  }
+  return n;
 }
 
 function config_path(path: string): string {
