@@ -65,13 +65,21 @@ const SHEET = 100;
 // a video sheet's gap between frames, and around them, in px
 const GAP = 4;
 
+// the containers (ffprobe's names) a seek lands exactly in; in others
+// (MPEG-TS...) it may land a keyframe late, so they decode from the start
+const INDEXED = /\b(mov|mp4|matroska|webm|avi)\b/;
+
+// frames further apart than this, in seconds, are each sought on their
+// own, rather than all decoded from the first
+const SPARSE = 2;
+
 const EDIT = { type: "object", properties: { path: STR, old: STR, new: STR, all: { type: "boolean" } }, required: ["path", "old", "new"] };
 
 export const TOOLS: Spec[] = [
   spec("shell", "Run a command with the device's shell ($SHELL -c), stdout and stderr together, and return its output, then its exit code and time, as (exit 0 in 0.4 s); output past " + CAP + " characters keeps its head and tail. Each call is a new shell. The call waits until the command and everything holding its output end, so give background jobs their own output file. Background jobs live only while unii is open on the device: closing it kills every process the calls started.", { command: STR }, ["command"]),
   spec("read", "Read a text file. offset: the first line to show (from 1); limit: how many lines; at: the character of the first line to start from. It ends saying the lines shown, as [lines 4-7 of 15]; output past " + CAP + " characters comes in pages, saying where to go on. An image file (png, jpeg, gif, webp) comes as the picture, scaled to fit " + FIT + " px, or max_side px if given (a GIF shows its first frame; view_video plays it).", { path: STR, offset: INT, limit: INT, at: INT, max_side: INT }, ["path"]),
   spec("write", "Write a whole file, making its directories. Answers a unified diff of what changed (a new file: all its lines added).", { path: STR, content: STR }, ["path", "content"]),
-  spec("view_video", "See part of a video (any file ffmpeg opens: mp4, mkv, webm, mov, avi, gif...) as ONE image: a grid of its frames, row by row, each stamped with its frame number (top) and time (bottom), fitting " + FIT + " px, or max_side px. It also answers a line on the whole video (duration, fps, frames, size). start and end: the range, ends included, in frames from 0 (or seconds, with unit \"second\"); by default the whole video. step: take every step-th frame; by default the one that gives at most 16. Each frame gets smaller as more share the sheet: past about 25 they get hard to read, and " + SHEET + " is the most. For a long stretch, raise step, narrow the range, or call again on the next range. Frames are counted from the file's start, so a range late in a long video takes longer. Needs ffmpeg and ffprobe on the device.", { path: STR, start: { type: "number" }, end: { type: "number" }, unit: { type: "string", enum: ["frame", "second"] }, step: INT, max_side: INT }, ["path"]),
+  spec("view_video", "See part of a video (any file ffmpeg opens: mp4, mkv, webm, mov, avi, gif...) as ONE image: a grid of its frames, row by row, each stamped with its frame number (top) and time (bottom), fitting " + FIT + " px, or max_side px. It also answers a line on the whole video (duration, fps, frames, size). start and end: the range, ends included, in frames from 0 (or seconds, with unit \"second\"); by default the whole video. step: take every step-th frame; by default the one that gives at most 16. Each frame gets smaller as more share the sheet: past about 25 they get hard to read, and " + SHEET + " is the most. For a long stretch, raise step, narrow the range, or call again on the next range. Needs ffmpeg and ffprobe on the device.", { path: STR, start: { type: "number" }, end: { type: "number" }, unit: { type: "string", enum: ["frame", "second"] }, step: INT, max_side: INT }, ["path"]),
   spec("edit", "Replace text in files: the edits in order, each on its file as the edits before it left it. old must match exactly, whitespace included, and only once, unless all is true, which replaces every match. If any edit fails, no file is changed. Answers a unified diff of each file.", { edits: { type: "array", items: EDIT, minItems: 1 } }, ["edits"]),
 ];
 
@@ -307,13 +315,16 @@ export namespace Machine {
   // frames of a video (input: view_video's) on one sheet, as ffmpeg makes
   // it, with a line on the whole video from ffprobe. The frames taken are
   // start, start + step... up to end (frame numbers; seconds turn into
-  // them at the video's frame rate), decoded from the file's start, so
-  // each frame's number is exact
+  // them at the video's frame rate). ffmpeg seeks to start (half a frame
+  // early, so it lands on it; each frame stamped with its time from the
+  // file's start), where the container lets it (INDEXED), and decodes on
+  // the CPU: a few frames a call, the same
+  // on every machine
   export async function video(file: string, input: any, signal: AbortSignal): Promise<Out> {
     if (["ffmpeg", "ffprobe"].some((bin) => Bun.which(bin, { PATH: process.env.PATH ?? "" }) === null)) {
       return { text: "view_video needs ffmpeg and ffprobe, which aren't installed on this device. Install ffmpeg (e.g. apt install ffmpeg / brew install ffmpeg / winget install ffmpeg) and try again.", fail: true };
     }
-    const shown = ["stream=codec_name,width,height,avg_frame_rate,r_frame_rate,nb_frames,duration", "format=duration"].join(":");
+    const shown = ["stream=codec_name,width,height,avg_frame_rate,r_frame_rate,nb_frames,duration", "format=duration,format_name"].join(":");
     const probe = await Machine.exec(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", shown, "-of", "json", file], signal);
     if (probe.code !== 0) {
       return { text: "ffprobe: " + probe.err.trim(), fail: true };
@@ -326,16 +337,18 @@ export namespace Machine {
     const fps    = Machine.rate(stream.avg_frame_rate) || Machine.rate(stream.r_frame_rate);
     const secs   = Number(stream.duration ?? json.format?.duration);
     const exact  = Number(stream.nb_frames) > 0;
-    const frames = exact ? Number(stream.nb_frames) : Math.round(secs * fps) || 1;
+    const frames = exact ? Number(stream.nb_frames) : Math.round(secs * fps);
+    const total  = frames > 0 ? (exact ? "" : "about ") + frames + " frames (0-" + (frames - 1) + ")" : "frame count unknown";
     const [w0, h0] = [Number(stream.width), Number(stream.height)];
-    const about  = input.path + ": " + (secs > 0 ? +secs.toFixed(3) + " s, " : "") + +fps.toFixed(3) + " fps, " + (exact ? "" : "about ") + frames + " frames (0-" + (frames - 1) + "), " + w0 + "x" + h0 + ", " + stream.codec_name;
+    const about  = input.path + ": " + (secs > 0 ? +secs.toFixed(3) + " s, " : "") + +fps.toFixed(3) + " fps, " + total + ", " + w0 + "x" + h0 + ", " + stream.codec_name;
     const sec    = input.unit === "second";
     if (sec && !(fps > 0)) {
       return { text: about + "\nIts frame rate is unknown: give start and end in frames.", fail: true };
     }
     const at     = (x: unknown, or: number) => (x === undefined || x === null ? or : Math.round(Number(x) * (sec ? fps : 1)));
     const start  = at(input.start, 0);
-    const end    = Math.min(at(input.end, frames - 1), exact ? frames - 1 : Infinity);
+    const last   = frames > 0 ? frames - 1 : start + 15 * (Number(input.step) || 1);
+    const end    = Math.min(at(input.end, last), exact ? frames - 1 : Infinity);
     const step   = input.step === undefined || input.step === null ? Math.max(1, Math.ceil((end - start + 1) / 16)) : Math.floor(Number(input.step));
     const why    = !(start >= 0) ? "start must be 0 or more" : !(start < frames || !exact) ? "start is past the last frame" : !(end >= start) ? "end must not be before start" : !(step >= 1) ? "step must be 1 or more" : "";
     if (why !== "") {
@@ -356,14 +369,34 @@ export namespace Machine {
     const [w, h] = [Math.max(2, 2 * Math.floor((w0 * k) / 2)), Math.max(2, 2 * Math.floor((h0 * k) / 2))];
     const font  = Math.max(10, Math.round(Math.min(h / 10, w / 8)));
     const label = ":fontsize=" + font + ":fontcolor=white:box=1:boxcolor=black@0.6:boxborderw=2:x=2";
-    const pick  = "select='between(n," + start + "," + end + ")*not(mod(n-" + start + "," + step + "))',scale=" + w + ":" + h;
-    const marks = ",drawtext=text='%{eif\\:n*" + step + "+" + start + "\\:d}'" + label + ":y=2,drawtext=text='%{pts\\:hms}'" + label + ":y=h-th-4";
-    const grid  = ",tile=" + cols + "x" + rows + ":padding=" + GAP + ":margin=" + GAP + ":color=white";
-    const sheet = async (graph: string) => Machine.exec(["ffmpeg", "-v", "error", "-nostdin", "-i", file, "-an", "-sn", "-dn", "-vf", graph, "-frames:v", "1", "-f", "image2pipe", "-c:v", "mjpeg", "-q:v", "3", "pipe:1"], signal);
-    let made    = await sheet(pick + marks + grid);
+    const seeks = fps > 0 && INDEXED.test(json.format?.format_name ?? "");
+    const pick  = (f: number) => (seeks && f > 0 ? ["-ss", String((f - 0.5) / fps)] : []);
+    const ffmpeg = (from: string[], input: string, graph: string, stdin?: Buffer) => Machine.exec(["ffmpeg", "-v", "error", ...from, "-i", input, "-an", "-sn", "-dn", "-vf", graph, "-frames:v", "1", "-f", "image2pipe", "-c:v", "mjpeg", "-q:v", "3", "pipe:1"], signal, stdin);
+    const grid  = "tile=" + cols + "x" + rows + ":padding=" + GAP + ":margin=" + GAP + ":color=white";
+    // its frames stamped (or not: an ffmpeg without drawtext), number n
+    // (an expression) and time; past SPARSE s apart, each sought on its
+    // own, then tiled; else all from one seek to start
+    const sheet = async (stamp: boolean) => {
+      const marks = (n: string, from: string[]) => (stamp ? ",drawtext=text='" + n + "'" + label + ":y=2,drawtext=text='%{pts\\:hms\\:" + (from[1] ?? 0) + "}'" + label + ":y=h-th-4" : "");
+      if (seeks && step / fps > SPARSE) {
+        const shots: Buffer[] = [];
+        for (let f = start; f <= end; f += step) {
+          const one = await ffmpeg(pick(f), file, "scale=" + w + ":" + h + marks(String(f), pick(f)));
+          if (one.code !== 0) {
+            return one;
+          }
+          shots.push(one.out);
+        }
+        return ffmpeg(["-f", "image2pipe", "-c:v", "mjpeg"], "pipe:0", grid, Buffer.concat(shots));
+      }
+      const first = seeks ? 0 : start;
+      const which = "select='between(n," + first + "," + (end - start + first) + ")*not(mod(n-" + first + "," + step + "))'";
+      return ffmpeg(pick(start), file, which + ",scale=" + w + ":" + h + marks("%{eif\\:n*" + step + "+" + start + "\\:d}", pick(start)) + "," + grid);
+    };
+    let made    = await sheet(true);
     let note    = "";
     if (made.code !== 0 && /drawtext|font/i.test(made.err)) {
-      made = await sheet(pick + grid);
+      made = await sheet(false);
       note = " (unstamped: this ffmpeg can't draw text)";
     }
     if (made.code !== 0 || made.out.length === 0) {
@@ -381,8 +414,8 @@ export namespace Machine {
   }
 
   // a program's output, its errors, its exit code; killed on a stop
-  export async function exec(argv: string[], signal: AbortSignal): Promise<{ out: Buffer; err: string; code: number }> {
-    const proc = Bun.spawn(argv, { stdin: "ignore", stdout: "pipe", stderr: "pipe", signal });
+  export async function exec(argv: string[], signal: AbortSignal, stdin?: Buffer): Promise<{ out: Buffer; err: string; code: number }> {
+    const proc = Bun.spawn(argv, { stdin: stdin ?? "ignore", stdout: "pipe", stderr: "pipe", signal });
     const [out, err] = await Promise.all([new Response(proc.stdout).arrayBuffer(), new Response(proc.stderr).text()]);
     return { out: Buffer.from(out), err, code: await proc.exited };
   }
