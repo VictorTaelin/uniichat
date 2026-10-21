@@ -96,9 +96,11 @@ also be set as the variable `UNII_<KEY>`:
 - `claude_sub`, `claude`: claude-sub's Claude Code config dir (default
   ~/.unii/claude-sub) and executable (default: the one `unii` carries,
   else the Agent SDK's in node_modules).
-- `claude_lanes`, `claude_idle`: how many claude-sub Claude Codes may run
-  at once (default 3; about 250 MB each) and how long one may sit unused
-  before it ends, in seconds (default 300).
+- `claude_lanes`, `claude_idle`: how many claude-sub chat turns and
+  subagents may run at once, each on its own Claude Code (default 3;
+  about 250 MB each; summaries get one more, as a turn may wait on them)
+  and how long one may sit unused before it ends, in seconds (default
+  300).
 
 Keys are read from the environment: `ANTHROPIC_API_KEY`,
 `OPENAI_API_KEY`, `RESEND_API_KEY` (to email sign-in links; none: they

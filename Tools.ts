@@ -117,6 +117,11 @@ let HTTP: ReturnType<typeof Bun.serve> | null = null;
 // the header of a request that waits on a job, its id (Tools.give)
 const JOB = "x-unii-job";
 
+// the requests running, by chat, caller, MCP session and JSON-RPC id:
+// what a `notifications/cancelled` for one stops
+const RUNNING = new Map<string, Set<AbortController>>();
+const SESSION = "mcp-session-id";
+
 // the master's prompt (a turn's and a compaction's): prompt.txt
 export const MASTER = PROMPT.trim();
 
@@ -271,42 +276,72 @@ export namespace Tools {
   // MCP
   // ---
 
-  // a notification gets no answer; a request dropped stops its job; one
-  // of a chat moved, or waiting as it moves, goes on where it went
+  // a notification gets no answer; a request dropped, or cancelled (a
+  // `notifications/cancelled` naming it), stops its job; one of a chat
+  // moved, or waiting as it moves, goes on where it went, and so does a
+  // cancel of it
   export async function fetch(req: Request): Promise<Response> {
     const [, key, who, ...rest] = new URL(req.url).pathname.split("/");
     const tools = CHATS.get(key) ?? (GONE.has(key) ? undefined : await COMING.then(() => CHATS.get(key)));
     const caller = who === "main" || tools?.agents.has(who);
     const msg = await req.json().catch(() => ({}));
     const id = req.headers.get(JOB) ?? crypto.randomUUID();
-    if (GONE.has(key)) {
-      return Tools.pass(GONE.get(key)!, key, who, msg, id, req.signal);
+    const session = req.headers.get(SESSION) ?? "";
+    const scope = [key, who, session].join("/") + "/";
+    if (msg.id === undefined && msg.method === "notifications/cancelled" && msg.params?.requestId !== undefined) {
+      RUNNING.get(scope + JSON.stringify(msg.params.requestId))?.forEach((c) => c.abort());
     }
-    if (tools === undefined || rest.length > 0 || !caller) {
-      return new Response(null, { status: 404 });
+    const cancel = new AbortController();
+    const signal = AbortSignal.any([req.signal, cancel.signal]);
+    const name = scope + JSON.stringify(msg.id);
+    if (msg.id !== undefined) {
+      RUNNING.set(name, (RUNNING.get(name) ?? new Set()).add(cancel));
     }
-    if (req.method !== "POST") {
-      return new Response(null, { status: 405 });
+    try {
+      if (GONE.has(key)) {
+        return await Tools.pass(GONE.get(key)!, key, who, msg, id, session, signal);
+      }
+      if (tools === undefined || rest.length > 0 || !caller) {
+        return new Response(null, { status: 404 });
+      }
+      if (req.method !== "POST") {
+        return new Response(null, { status: 405 });
+      }
+      if (msg.id === undefined) {
+        return new Response(null, { status: 202 });
+      }
+      const no = { error: { code: -32601, message: "no method " + msg.method } };
+      const here = Tools.answer(tools, who, msg.method, msg.params ?? {}, signal, id).then(
+        (result) => (result === null ? no : { result }),
+        (err) => ({ error: { code: -32603, message: String(err?.message ?? err) } }),
+      );
+      const out = await Promise.race([here, tools.away.promise]);
+      if (typeof out === "string") {
+        return await Tools.pass(out, key, who, msg, id, session, signal);
+      }
+      return Response.json({ jsonrpc: "2.0", id: msg.id, ...out });
+    } finally {
+      const set = RUNNING.get(name);
+      if (set?.delete(cancel) && set.size === 0) {
+        RUNNING.delete(name);
+      }
     }
-    if (msg.id === undefined) {
-      return new Response(null, { status: 202 });
-    }
-    const no = { error: { code: -32601, message: "no method " + msg.method } };
-    const here = Tools.answer(tools, who, msg.method, msg.params ?? {}, req.signal, id).then(
-      (result) => (result === null ? no : { result }),
-      (err) => ({ error: { code: -32603, message: String(err?.message ?? err) } }),
-    );
-    const out = await Promise.race([here, tools.away.promise]);
-    if (typeof out === "string") {
-      return Tools.pass(out, key, who, msg, id, req.signal);
-    }
-    return Response.json({ jsonrpc: "2.0", id: msg.id, ...out });
   }
 
-  // a request sent on to the tools at `url`, as the job `id` if one
-  export function pass(url: string, key: string, who: string, msg: object, id: string, signal: AbortSignal): Promise<Response> {
-    const headers = { "content-type": "application/json", [JOB]: id };
-    return globalThis.fetch(url + key + "/" + who, { method: "POST", headers, body: JSON.stringify(msg), signal });
+  // a request sent on to the tools at `url`, as the job `id` if one, in
+  // its MCP session (a cancel there finds it); dropped once it's dropped
+  // or cancelled here (499: nobody waits for an answer)
+  export function pass(url: string, key: string, who: string, msg: object, id: string, session: string, signal: AbortSignal): Promise<Response> {
+    const headers: Record<string, string> = { "content-type": "application/json", [JOB]: id };
+    if (session !== "") {
+      headers[SESSION] = session;
+    }
+    return globalThis.fetch(url + key + "/" + who, { method: "POST", headers, body: JSON.stringify(msg), signal }).catch((err) => {
+      if (signal.aborted) {
+        return new Response(null, { status: 499 });
+      }
+      throw err;
+    });
   }
 
   // null: no such method
@@ -444,7 +479,8 @@ export namespace Tools {
     if (typeof run === "string") {
       return Promise.resolve({ text: run, fail: true });
     }
-    signal.addEventListener("abort", () => run.end({ text: "Stopped.", fail: true }), { once: true });
+    const stop = () => run.end({ text: "Stopped.", fail: true });
+    signal.aborted ? stop() : signal.addEventListener("abort", stop, { once: true });
     return run.out;
   }
 

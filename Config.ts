@@ -38,8 +38,9 @@ export const WORKERS    = Number(config_get("workers", "0"));
 
 // claude-sub's Claude Code (ClaudeSub.ts): its config dir, where its
 // sign-in is kept; the executable ("": the one unii carries, else the
-// Agent SDK's); how many may run at once; how long one may sit unused
-// before it ends, in seconds
+// Agent SDK's); how many chat turns and subagents may run at once (each
+// its own; summaries get one more); how long one may sit unused before
+// it ends, in seconds
 export const CLAUDE_SUB   = config_path(config_get("claude_sub", DIR + "/claude-sub"));
 export const CLAUDE       = config_path(config_get("claude", ""));
 export const CLAUDE_LANES = Math.max(1, Number(config_get("claude_lanes", "3")) || 3);

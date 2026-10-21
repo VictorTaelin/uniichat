@@ -9,8 +9,9 @@
 // lacking one takes its fastest below), up and down the efforts, never
 // the speed; given a value (`to`), to the pick whose part it is. A saved
 // pick the server doesn't offer gives way to def, never to a pick like
-// it. A model two offered vendors have is shown with its vendor
-// (`shown`).
+// it. A model two offered vendors have (opus-5.5: claude-api's and
+// claude-sub's) is two picks of the same label: a move by value takes
+// the pick's own vendor's, or the one named "vendor:model".
 
 import type { Vendor } from "./AskAI.ts";
 
@@ -84,7 +85,7 @@ export namespace Pick {
   // each with the part the move steps
   export function options(pick: Pick, move: Move, { vendors, models }: Offer): Array<[string, Pick]> {
     const speeds = Pick.model(pick.vendor, pick.model)?.speeds ?? [];
-    const all = (vs: Vendor[]) => Pick.models(vs, models).map(([v, m]): [string, Pick] => [Pick.shown(v, m.label, vendors), Pick.on(pick, v, m)]);
+    const all = (vs: Vendor[]) => Pick.models(vs, models).map(([v, m]): [string, Pick] => [m.label, Pick.on(pick, v, m)]);
     switch (move) {
       case "next":
       case "prev":
@@ -109,15 +110,17 @@ export namespace Pick {
     const d    = move === "prev" || move === "down" ? -1 : 1;
     const ends = move === "up" || move === "down";
     const next = ends ? Math.max(0, Math.min(n - 1, at + d)) : (at + d + n) % n;
+    const mine = ([, p]: [string, Pick]) => p.vendor === pick.vendor;
+    const same = list.filter(([part, p]) => part === to || p.vendor + ":" + part === to);
     const like = list.filter(([part]) => part.toLowerCase().includes(String(to).toLowerCase()));
-    const hit  = to === undefined ? list[next] : list.find(([part]) => part === to) ?? (like.length === 1 ? like[0] : undefined);
+    const one  = like.length === 1 ? like[0] : like.filter(mine).length === 1 ? like.find(mine) : undefined;
+    const hit  = to === undefined ? list[next] : same.find(mine) ?? same[0] ?? one;
     return hit === undefined ? null : hit[1];
   }
 
-  // a model as shown: its label, and its vendor if another offered has it
-  export function shown(vendor: Vendor, label: string, vendors: Vendor[]): string {
-    const twin = vendors.some((v) => v !== vendor && Pick.model(v, label) !== undefined);
-    return twin ? label + " (" + vendor + ")" : label;
+  // whether another vendor offered has a model of this label
+  export function twin(vendor: Vendor, label: string, vendors: Vendor[]): boolean {
+    return vendors.some((v) => v !== vendor && Pick.model(v, label) !== undefined);
   }
 
   export function label(pick: Pick): string {

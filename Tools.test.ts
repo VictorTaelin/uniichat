@@ -29,3 +29,63 @@ test("a call's MCP requests follow its chat past a process that ended", async ()
   expect(await (await ask()).text()).toBe("c /" + tools.key + "/main");
   c.stop(true);
 });
+
+// a stopped Claude Code (claude-sub) cancels its tool call with an MCP
+// `notifications/cancelled` naming the request, its HTTP request left
+// open: the device's job must stop, here or where the chat went
+test("a cancel stops the job of the request it names, here and where its chat went", async () => {
+  const tools = Tools.serve({} as any, {} as any);
+  const sent: any[] = [];
+  const term = { send: (m: object) => sent.push(m), live: () => true, computer: false, work: "/w" };
+  tools.devices.set("d", { who: "u", terms: new Map([["t", term]]), jobs: new Map() });
+  const post = (body: object) => fetch(Tools.at(tools, "main"), { method: "POST", body: JSON.stringify({ jsonrpc: "2.0", ...body }) });
+  const cancel = (requestId: unknown) => post({ method: "notifications/cancelled", params: { requestId, reason: "interrupted" } });
+  const call = post({ id: 7, method: "tools/call", params: { name: "shell", arguments: { device: "d", command: "sleep 100" } } });
+  while (!sent.some((m) => m.$ === "job")) {
+    await Bun.sleep(5);
+  }
+  const jobs = (tools as any).devices.get("d").jobs as Map<string, unknown>;
+  expect(jobs.size).toBe(1);
+  // another id, or another caller's: nothing stops
+  expect((await cancel(8)).status).toBe(202);
+  await fetch(Tools.at(tools, "Agent1"), { method: "POST", body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: 7 } }) });
+  await Bun.sleep(20);
+  expect(jobs.size).toBe(1);
+  expect((await cancel(7)).status).toBe(202);
+  const out: any = await (await call).json();
+  expect(out).toMatchObject({ id: 7, result: { content: [{ type: "text", text: "Stopped." }], isError: true } });
+  expect(jobs.size).toBe(0);
+  expect(sent.at(-1)).toEqual({ $: "jobs", ids: [] });
+
+  // the chat moved on: its request and the cancel of it go there, and the
+  // request sent on is dropped
+  const there: any[] = [];
+  let dropped = false;
+  const b = Bun.serve({
+    port: 0, hostname: "127.0.0.1", idleTimeout: 0,
+    async fetch(req) {
+      const msg = await req.json();
+      there.push(msg);
+      if (msg.id === undefined) {
+        return new Response(null, { status: 202 });
+      }
+      await new Promise<void>((ok) => req.signal.addEventListener("abort", () => ok(), { once: true }));
+      dropped = true;
+      return new Response(null, { status: 499 });
+    },
+  });
+  Tools.give(tools, "http://127.0.0.1:" + b.port + "/", () => "");
+  const far = post({ id: 9, method: "tools/call", params: { name: "shell", arguments: { device: "d", command: "sleep 100" } } }).catch(() => null);
+  while (there.length === 0) {
+    await Bun.sleep(5);
+  }
+  await cancel(9);
+  await far;
+  for (let i = 0; i < 100 && !dropped; i++) {
+    await Bun.sleep(10);
+  }
+  expect(there.map((m) => m.method)).toEqual(["tools/call", "notifications/cancelled"]);
+  expect(there[1].params.requestId).toBe(9);
+  expect(dropped).toBe(true);
+  b.stop(true);
+});

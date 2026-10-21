@@ -771,7 +771,7 @@ var Pick;
   Pick.models = models;
   function options(pick, move2, { vendors, models: models2 }) {
     const speeds = Pick.model(pick.vendor, pick.model)?.speeds ?? [];
-    const all = (vs) => Pick.models(vs, models2).map(([v, m]) => [Pick.shown(v, m.label, vendors), Pick.on(pick, v, m)]);
+    const all = (vs) => Pick.models(vs, models2).map(([v, m]) => [m.label, Pick.on(pick, v, m)]);
     switch (move2) {
       case "next":
       case "prev":
@@ -796,16 +796,18 @@ var Pick;
     const d = move2 === "prev" || move2 === "down" ? -1 : 1;
     const ends = move2 === "up" || move2 === "down";
     const next = ends ? Math.max(0, Math.min(n - 1, at + d)) : (at + d + n) % n;
+    const mine = ([, p]) => p.vendor === pick.vendor;
+    const same = list.filter(([part, p]) => part === to || p.vendor + ":" + part === to);
     const like = list.filter(([part]) => part.toLowerCase().includes(String(to).toLowerCase()));
-    const hit = to === undefined ? list[next] : list.find(([part]) => part === to) ?? (like.length === 1 ? like[0] : undefined);
+    const one = like.length === 1 ? like[0] : like.filter(mine).length === 1 ? like.find(mine) : undefined;
+    const hit = to === undefined ? list[next] : same.find(mine) ?? same[0] ?? one;
     return hit === undefined ? null : hit[1];
   }
   Pick.move = move;
-  function shown(vendor, label2, vendors) {
-    const twin = vendors.some((v) => v !== vendor && Pick.model(v, label2) !== undefined);
-    return twin ? label2 + " (" + vendor + ")" : label2;
+  function twin(vendor, label2, vendors) {
+    return vendors.some((v) => v !== vendor && Pick.model(v, label2) !== undefined);
   }
-  Pick.shown = shown;
+  Pick.twin = twin;
   function label(pick) {
     return [pick.vendor, pick.model, pick.effort, pick.speed].join(":");
   }
@@ -1153,8 +1155,9 @@ function view_pick(v) {
   const plan = v.pick.vendor === "claude-sub";
   const rate = plan ? undefined : Price.rate(Pick.ask(v.pick).model);
   const price = rate === undefined ? "" : ": $" + rate.input + "/M tokens in, $" + rate.output + "/M out";
+  const whose = Pick.twin(v.pick.vendor, model, v.vendors) ? ", " + v.pick.vendor : "";
   return [
-    { text: model, move: "model", hint: model + price },
+    { text: model, move: "model", hint: model + whose + price },
     { text: effort, move: "effort", hint: effort + " effort: how long it thinks first; more is smarter, slower" + (plan ? "" : " and costs more") },
     { text: speed, move: "speed", hint: plan ? speed : speed + ": ×" + Price.times(speed) + " the price" }
   ];
