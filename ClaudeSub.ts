@@ -11,8 +11,8 @@
 // pipe: never on its command line) and web search, always; Claude Code's
 // own tools, settings, skills, memory and compaction off. It runs the
 // tool loop; we log what it streams. A message sent mid-run goes in once
-// its turn ends. Not signed in, the call ends as the vendor's (`down`),
-// saying how to sign in.
+// its turn ends. Not signed in, the call ends as one its vendor can't
+// be asked for here (no stop, as with no API key), saying how to sign in.
 //
 // A Claude Code per call: each call starts its own (~235 MB while it
 // runs), which exits as the call ends; a stop kills it (its tool jobs
@@ -647,7 +647,7 @@ export namespace ClaudeSub {
       }
       if (msg.type === "assistant" && msg.error === "authentication_failed") {
         await ClaudeSub.settle(code);
-        return { text: SIGN_IN, stop: "down" };
+        return { text: SIGN_IN };
       }
       hit ||= msg.type === "assistant" && msg.error === "rate_limit";
       if (msg.type === "user" && Array.isArray(msg.message.content)) {
