@@ -380,6 +380,7 @@ var READS = new Map([
   ["shell", (x) => ({ head: String(x.command ?? ""), blocks: [] })],
   ["read", (x) => ({ head: String(x.path ?? "") + lines_show(x.offset, x.limit), blocks: [] })],
   ["write", (x) => ({ head: String(x.path ?? ""), blocks: [] })],
+  ["view_video", (x) => ({ head: String(x.path ?? "") + range_show(x.start, x.end, x.unit) + (x.step === undefined ? "" : " every " + x.step), blocks: [] })],
   ["edit", (x) => Array.isArray(x.edits) ? { head: edits_files(x.edits), blocks: [] } : input_shown(x)],
   ["zoom", (x) => ({ head: msg_show(x.id, x.n) + (x.at === undefined ? "" : " from char " + x.at), blocks: [] })],
   ["date", (x) => ({ head: msg_show(x.id, 1), blocks: [] })],
@@ -443,6 +444,10 @@ function lines_show(offset, limit) {
   const from = typeof offset === "number" ? offset : 1;
   const to = typeof limit === "number" ? String(from + limit - 1) : "";
   return offset === undefined && limit === undefined ? "" : ":" + from + "-" + to;
+}
+function range_show(start, end, unit) {
+  const s = unit === "second" ? "s" : "";
+  return start === undefined && end === undefined ? "" : " " + (start ?? 0) + s + "-" + (end ?? "") + (end === undefined ? "" : s);
 }
 function edits_files(edits) {
   const paths = edits.map((e) => e?.path).filter((p) => typeof p === "string");
