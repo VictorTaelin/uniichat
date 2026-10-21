@@ -7,45 +7,42 @@
 // its `claude auth login` there, so the sign-in is Anthropic's own and
 // the token stays Claude Code's, kept and refreshed by it, never read by
 // us. A call is one turn: our system prompt, our blocks as its message,
-// our tools over MCP (the chat's URL, Tools.ts) and web search; Claude
-// Code's own tools, settings, skills, memory and compaction off. It runs
-// the tool loop; we log what it streams. A message sent mid-run goes in
-// once its turn ends. A refusal (not signed in, a usage limit) ends the
-// call as the vendor's (`down`), in Claude Code's words ("You've hit your
-// limit · resets 3pm"), or saying how to sign in.
+// our tools over MCP (the chat's URL, Tools.ts, set over Claude Code's
+// pipe: never on its command line) and web search, always; Claude Code's
+// own tools, settings, skills, memory and compaction off. It runs the
+// tool loop; we log what it streams. A message sent mid-run goes in once
+// its turn ends. Not signed in, the call ends as the vendor's (`down`),
+// saying how to sign in.
 //
-// Lanes: a Claude Code is a ~250 MB process, so calls don't each start
-// one. A lane is one kept running, serving one call at a time, each in a
-// fresh conversation (/clear: no call sees another's). Its system prompt
-// and tools are fixed at its start, so a lane serves only calls of that
-// exact prompt: its key is a hash of the prompt's text and the binary,
-// nothing else (not the user, not the chat: any call of the same prompt
-// takes it; web search is always on). A prompt that changes (the rules
-// file edited) has a new key; its old lanes go unused and end. Model,
-// effort and our MCP URL are set per call. A call takes a free lane of
-// its key, else starts one, else ends the longest unused lane of another
-// key for one, else waits, chat turns first, then subagents, then
-// summaries, then imports (`rank`); a stop while it waits ends it.
-// `claude_lanes` (LANES, at least 2) is the most Claude Codes running at
-// once, all told: those still ending count till they exit, and nothing
-// ever starts one more. One of them is the summaries' (and imports'):
-// chat turns and subagents hold at most LANES - 1, summaries one, so the
-// summaries a turn waits on (a spawn waits for the chat's view) always
-// get to run. A call that finds every lane it may use busy waits for one,
-// however long; nothing it waits on is ended for it. A lane unused IDLE
-// ends; one that dies is dropped (its call tried once more on a fresh
-// lane, if nothing came out yet); one stopped while being set for its
-// call ends; all end at a sign-in or out (`unii claude` marks it) and
-// with the server.
+// A Claude Code per call: each call starts its own (~235 MB while it
+// runs), which exits as the call ends; a stop kills it (its tool jobs
+// stop as their requests drop). Chat turns and subagents start theirs at
+// once: a parent waits on its subagents, so a cap there could deadlock.
+// Summaries and imports wait on no call: SUMS of them run at most at once
+// (Memory.ts starts up to JOBS), a chat's summaries ahead of imports'.
+//
+// A usage limit never ends a call, as with the other vendors (Agent.ts).
+// Claude Code tells it (a rate_limit_event "rejected", saying when it
+// resets; then a reply with error rate_limit); the call waits for that
+// reset (if not told, a doubling wait up to PACE), its thought saying so
+// once, and a message sent or a stop ends the wait. One that ran no tool
+// of ours (nor took a message) asks again in a new Claude Code; one that
+// did keeps its Claude Code, idle, and at the reset is told to go on
+// (ON): its conversation as it was, tool results in, so no tool runs
+// again. Usage billed past the plan (isUsingOverage: extra usage) is a
+// limit too: the turn is interrupted at once (an answer already whole is
+// kept: it is paid). A limit told is remembered till its reset (LIMITS,
+// per plan or per model family), and a call under it waits before
+// starting a Claude Code, so none asks into it, nor bills extra usage.
 
 import * as child from "node:child_process";
-import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { Options, Query, SDKMessage, SDKUserMessage, SpawnOptions } from "@anthropic-ai/claude-agent-sdk";
-import { AskAI, type Ask, type Event, type Img, type Say, type Try } from "./AskAI.ts";
-import { Agent, type Emit } from "./Agent.ts";
+import type { Options, Query, SDKMessage, SDKRateLimitInfo, SDKUserMessage, SpawnOptions } from "@anthropic-ai/claude-agent-sdk";
+import { AskAI, type Ask, type End, type Event, type Img, type Say, type Try } from "./AskAI.ts";
+import { Agent, TRIES, type Emit } from "./Agent.ts";
 import { Anthropic } from "./Anthropic.ts";
+import { Machine } from "./Machine.ts";
 import { live_push, type Live } from "./View.ts";
 import * as config from "./Config.ts";
 
@@ -54,24 +51,20 @@ import * as config from "./Config.ts";
 
 const DIR = config.CLAUDE_SUB;
 
-// touched by `unii claude` at each sign-in and out: lanes started before
-// it end (it holds no token)
-const MARK = DIR + "/.unii-signed";
+// the most summaries' and imports' Claude Codes running at once
+export const SUMS = 4;
 
-const LANES = config.CLAUDE_LANES;
-const IDLE  = config.CLAUDE_IDLE * 1e3;
-
-// how long a stopped call's lane may take to end its turn, and a lane to
-// clear its conversation, before it's ended
-const DRAIN = 15e3;
-const CLEAR = 15e3;
-
-// how long an ended lane's Claude Code may take to exit before it's killed
-const KILL = 10e3;
+// the longest wait between asks at a usage limit whose reset isn't told
+// (a patient call's: AGAIN, as AskAI's)
+const PACE  = 1800e3;
+const AGAIN = 60e3;
 
 // a carried binary's copy younger than this is never removed (another
 // process may have just written it, not yet marked it as its own)
 const FRESH = 60e3;
+
+// what a call that ran tools is told as its usage limit resets
+export const ON = "(The AI service's usage limit cut your last step short. It has reset: go on.)";
 
 // Claude Code's tools kept: web search, as claude-api has (Anthropic.ts)
 const WEB = ["WebSearch"];
@@ -96,49 +89,43 @@ const NO_BIN = "claude-sub needs Claude Code: `bun install` in uniichat's folder
 
 const DIED = "Claude Code ended early";
 
+
 type Sdk = typeof import("@anthropic-ai/claude-agent-sdk");
 
-// a lane: its Claude Code (q; proc: its process, once started; gone:
-// exited); what it was started with (key) and when (mark: MARK's time
-// then); what the last call set; whether a call holds it (busy; rank:
-// that call's), has (used: its conversation needs clearing), and when it
-// let go; ended (dead), and the timer that kills it if it won't exit
-export type Lane = {
-  key    : string;
-  q      : Query;
-  proc   : child.ChildProcess | null;
-  gone   : boolean;
-  box    : ReturnType<typeof ClaudeSub.inbox>;
-  next   : Promise<IteratorResult<SDKMessage>> | null;
-  mark   : number;
-  model  : string;
-  effort : string;
-  server : string;
-  busy   : boolean;
-  rank   : number;
-  used   : boolean;
-  dead   : boolean;
-  at     : number;
-  idle   : ReturnType<typeof setTimeout> | null;
-  kill   : ReturnType<typeof setTimeout> | null;
+// a call's Claude Code: its query, the messages it reads, its process
+// (once spawned), when that exited, and what tells it did
+type Code = {
+  q    : Query;
+  box  : ReturnType<typeof ClaudeSub.inbox>;
+  proc : child.ChildProcess | null;
+  exit : Promise<void>;
+  gone : () => void;
 };
 
-// a call waiting for a lane: its key, rank, place in line; how its lane
-// starts, if one must
-type Wait = { key: string; rank: number; n: number; start: () => Lane; give: (lane: Lane) => void; fail: (err: Error) => void };
+// a turn's end: the call's, or a usage limit (until: its reset, if told,
+// ms since 1970; text: Claude Code's words)
+type Out = Partial<End> & { limit?: { until: number | null; text: string } };
 
-// a lane's end, as told: dead (gone, or failed to clear) or not
+// a summary or import waiting for a slot: an import's or not, its place
+// in line, what lets it go
+type Wait = { imp: boolean; n: number; go: () => void };
+
+// a turn's Claude Code ended unbidden
 class Died extends Error {}
-
-// a call stopped while its lane was being set for it
-class Stopped extends Error {}
 
 // State
 // =====
 
-// lanes: those running; ending: those ended, not exited yet (they count
-// toward the most); most: LANES (a test sets its own)
-const POOL = { lanes: [] as Lane[], ending: new Set<Lane>(), waits: [] as Wait[], n: 0, most: LANES, bin: null as Promise<string> | null, sdk: null as Promise<Sdk> | null, hooked: false };
+// the binary and the SDK, loaded once
+const LOADED = { bin: null as Promise<string> | null, sdk: null as Promise<Sdk> | null };
+
+// the summaries' slots: how many run, those waiting
+const SLOTS = { busy: 0, waits: [] as Wait[], n: 0 };
+
+// the usage limits told: the plan's (""), or a model family's ("opus",
+// "sonnet": a weekly limit of its own); till when, and whether asking
+// under it would bill extra usage
+const LIMITS = new Map<string, { until: number; bills: boolean }>();
 
 // ClaudeSub
 // =========
@@ -149,11 +136,11 @@ export namespace ClaudeSub {
   // carries (Build.ts; written out once, under the unii dir, as a process
   // can't run it from inside unii), else the SDK's in node_modules
   export function bin(): Promise<string> {
-    POOL.bin ??= ClaudeSub.find().catch((err) => {
-      POOL.bin = null;
+    LOADED.bin ??= ClaudeSub.find().catch((err) => {
+      LOADED.bin = null;
       throw err;
     });
-    return POOL.bin;
+    return LOADED.bin;
   }
 
   export async function find(): Promise<string> {
@@ -236,15 +223,15 @@ export namespace ClaudeSub {
 
   // the SDK, loaded once (a test hands in its own)
   export function sdk(): Promise<Sdk> {
-    POOL.sdk ??= import("@anthropic-ai/claude-agent-sdk").catch((err) => {
-      POOL.sdk = null;
+    LOADED.sdk ??= import("@anthropic-ai/claude-agent-sdk").catch((err) => {
+      LOADED.sdk = null;
       throw err;
     });
-    return POOL.sdk;
+    return LOADED.sdk;
   }
 
   export function use(sdk: unknown): void {
-    POOL.sdk = Promise.resolve(sdk as Sdk);
+    LOADED.sdk = Promise.resolve(sdk as Sdk);
   }
 
   // its environment: ours, less what would sign it in or send it
@@ -257,25 +244,30 @@ export namespace ClaudeSub {
     return { ...Object.fromEntries(ours), ...ENV, CLAUDE_CONFIG_DIR: DIR };
   }
 
-  // `unii claude [logout|status]`; a sign-in or out marked for the lanes
+
+  // `unii claude [logout|status]`
   export async function cli(args: string[]): Promise<void> {
     const cmd = args.includes("logout") ? ["logout"] : args.includes("status") ? ["status"] : ["login", "--claudeai"];
     const run = Bun.spawn([await ClaudeSub.bin(), "auth", ...cmd], { env: ClaudeSub.env(), stdio: ["inherit", "inherit", "inherit"] });
     process.exitCode = await run.exited;
-    if (cmd[0] !== "status") {
-      fs.writeFileSync(MARK, String(Date.now()), { mode: 0o600 });
-    }
   }
 
+  // a call (ClaudeSub.run); a message sent, like a stop, ends a wait for
+  // a usage limit
   export function ask(ask: Ask, on: (ev: Event) => void): Try {
     const end = AskAI.end("");
     const sent: Say[] = [];
     const abort = new AbortController();
+    const wake = { poke: () => {} };
+    const send = (say: Say) => {
+      sent.push(say);
+      wake.poke();
+    };
     const stop = () => {
       end.text = "stopped";
       abort.abort();
     };
-    const done = ClaudeSub.run(ask, on, sent, abort).then(
+    const done = ClaudeSub.run(ask, on, sent, abort.signal, wake).then(
       (out) => abort.signal.aborted || Object.assign(end, out),
       (err) => (end.text ||= err.message),
     ).then(() => {
@@ -283,14 +275,14 @@ export namespace ClaudeSub {
       end.left = sent;
       return end;
     });
-    return { send: (say) => sent.push(say), stop, done };
+    return { send, stop, done };
   }
 
-  // a lane's start: all but what a call sets (`prepare`); builtin:
-  // Claude Code's tools (the SDK's BUILTIN_TOOL_NAMES). Web search is
-  // always on (a summary's call has it too). Our tools load up front,
-  // never behind its tool search, and a call may run past the 60 s
-  // Claude Code gives an HTTP MCP request. Our MCP server is set per call,
+  // what a call's Claude Code starts with; builtin: Claude Code's tools
+  // (the SDK's BUILTIN_TOOL_NAMES). Web search is always on (a summary's
+  // call has it too). Our tools load up front, never behind its tool
+  // search, and a call may run past the 60 s Claude Code gives an HTTP
+  // MCP request. Our MCP server is set once it runs (ClaudeSub.connect),
   // over its pipe: its secret URL is never on its command line
   export function options(ask: Ask, abort: AbortController, builtin: readonly string[]): Options {
     const tools = WEB;
@@ -329,305 +321,217 @@ export namespace ClaudeSub {
     return server ? { unii: { type: "http", url: server, alwaysLoad: true, timeout: 1e8 } } : {};
   }
 
-  // what a lane is started with: the binary and the system prompt
-  export function key(bin: string, ask: Ask): string {
-    return crypto.createHash("sha256").update(bin + "\0" + ask.system).digest("hex");
+
+  // Summaries' slots
+  // ----------------
+
+  // the summaries' and imports' Claude Codes running, those waiting (for
+  // tests)
+  export function slots(): { busy: number; waits: number } {
+    return { busy: SLOTS.busy, waits: SLOTS.waits.length };
   }
 
-  // a call's place in line: a chat turn (or goal check) 0, a subagent's
-  // 1, a summary's 2, an import's 3 (Tools.at: the master's URL ends
-  // /main; a summary is patient; an import's also yields). 2 and 3 run on
-  // the summaries' lane
-  export function rank(ask: Ask): number {
-    return ask.patient ? (ask.yields === undefined ? 2 : 3) : ask.server === "" || ask.server.endsWith("/main") ? 0 : 1;
-  }
-
-  // the lanes running, those ended not exited yet, and the calls waiting
-  // (for tests)
-  export function pool(): { lanes: number; busy: number; ending: number; waits: number } {
-    return { lanes: POOL.lanes.length, busy: POOL.lanes.filter((l) => l.busy).length, ending: POOL.ending.size, waits: POOL.waits.length };
-  }
-
-  // the most set (for tests; below 2 refused, as config.ts does)
-  export function ceiling(most: number): void {
-    if (!(most >= 2)) {
-      throw new Error(config.LANES_LOW);
-    }
-    POOL.most = most;
-  }
-
-  // MARK's time: when the sign-in last changed (0: never marked)
-  export function signed(): number {
-    try {
-      return fs.statSync(MARK).mtimeMs;
-    } catch {
-      return 0;
-    }
-  }
-
-  // a lane for a call (null: stopped while waiting), in line
-  export function take(key: string, rank: number, start: () => Lane, signal: AbortSignal): Promise<Lane | null> {
-    return new Promise((ok, no) => {
+  // a slot for a summary's or import's Claude Code (false: stopped while
+  // waiting), in line: a chat's summaries first, then imports
+  export function slot(ask: Ask, signal: AbortSignal): Promise<boolean> {
+    return new Promise((ok) => {
       if (signal.aborted) {
-        return ok(null);
+        return ok(false);
       }
       const off = () => {
-        POOL.waits = POOL.waits.filter((w) => w !== wait);
-        ok(null);
+        SLOTS.waits = SLOTS.waits.filter((w) => w !== wait);
+        ok(false);
       };
-      const wait: Wait = {
-        key, rank, n: POOL.n++, start,
-        give: (lane) => (signal.removeEventListener("abort", off), ok(lane)),
-        fail: (err) => (signal.removeEventListener("abort", off), no(err)),
-      };
+      const wait: Wait = { imp: ask.yields !== undefined, n: SLOTS.n++, go: () => (signal.removeEventListener("abort", off), ok(true)) };
       signal.addEventListener("abort", off, { once: true });
-      POOL.waits.push(wait);
+      SLOTS.waits.push(wait);
       ClaudeSub.grant();
     });
   }
 
-  // the waiting calls given lanes, first in line first, each that can be:
-  // a chat turn or subagent while they hold fewer than most - 1 lanes, a
-  // summary or import while none holds the summaries' lane; then a free
-  // lane of its key, else a new one if fewer than most run or end, else
-  // the longest unused lane ended (one at a time) to make room once it
-  // exits. Never more than most, and never stuck: when a call may run,
-  // at most most - 1 lanes are busy, so one is free, unused or ending
   export function grant(): void {
-    const mark = ClaudeSub.signed();
-    POOL.lanes.filter((l) => !l.busy && l.mark !== mark).forEach(ClaudeSub.close);
-    POOL.waits.sort((a, b) => a.rank - b.rank || a.n - b.n);
-    for (const wait of [...POOL.waits]) {
-      const sums = wait.rank >= 2;
-      const held = POOL.lanes.filter((l) => l.busy && (l.rank >= 2) === sums).length;
-      if (held >= (sums ? 1 : POOL.most - 1)) {
-        continue;
-      }
-      let lane = POOL.lanes.find((l) => !l.busy && l.key === wait.key);
-      if (lane === undefined && POOL.lanes.length + POOL.ending.size >= POOL.most) {
-        const old = POOL.lanes.filter((l) => !l.busy).sort((a, b) => a.at - b.at)[0];
-        if (POOL.ending.size === 0 && old !== undefined) {
-          ClaudeSub.close(old);
-        }
-        continue;
-      }
-      POOL.waits = POOL.waits.filter((w) => w !== wait);
-      try {
-        lane ??= wait.start();
-      } catch (err: any) {
-        wait.fail(err);
-        continue;
-      }
-      lane.busy = true;
-      lane.rank = wait.rank;
-      if (lane.idle !== null) {
-        clearTimeout(lane.idle);
-        lane.idle = null;
-      }
-      wait.give(lane);
+    SLOTS.waits.sort((a, b) => Number(a.imp) - Number(b.imp) || a.n - b.n);
+    while (SLOTS.busy < SUMS && SLOTS.waits.length > 0) {
+      SLOTS.busy += 1;
+      SLOTS.waits.shift()!.go();
     }
   }
 
-  // a new lane for this call's key, started on its pick; its process
-  // spawned as the SDK's own spawn does (stderr unread), but watched: its
-  // exit frees its place
-  export function start(sdk: Sdk, bin: string, key: string, ask: Ask): Lane {
-    const box = ClaudeSub.inbox();
-    const lane = { key, box, proc: null, gone: false, next: null, mark: ClaudeSub.signed(), model: ask.model, effort: ask.effort, server: "", busy: false, rank: 0, used: false, dead: false, at: Date.now(), idle: null, kill: null } as Omit<Lane, "q"> as Lane;
-    const spawn = (o: SpawnOptions) => {
-      const proc = child.spawn(o.command, o.args, { cwd: o.cwd, env: o.env, signal: o.signal, stdio: ["pipe", "pipe", "ignore"], windowsHide: true });
-      lane.proc = proc;
-      proc.once("exit", () => ClaudeSub.exited(lane));
-      proc.once("error", () => proc.pid === undefined && ClaudeSub.exited(lane));
-      return proc;
-    };
-    const options = { ...ClaudeSub.options(ask, new AbortController(), sdk.BUILTIN_TOOL_NAMES), pathToClaudeCodeExecutable: bin, spawnClaudeCodeProcess: spawn };
-    lane.q = sdk.query({ prompt: box.read(), options });
-    POOL.lanes.push(lane);
-    if (!POOL.hooked) {
-      POOL.hooked = true;
-      process.on("exit", ClaudeSub.end);
-    }
-    return lane;
-  }
-
-  // a lane's next message (one read at a time, whoever waits on it)
-  export function read(lane: Lane): Promise<IteratorResult<SDKMessage>> {
-    lane.next ??= lane.q.next().then((r) => {
-      lane.next = null;
-      return r;
-    }, (err) => {
-      lane.next = null;
-      throw new Died(err?.message ?? String(err));
-    });
-    lane.next.catch(() => {});
-    return lane.next;
-  }
-
-  // a lane let go: back in the pool, unused for IDLE at most
-  export function release(lane: Lane): void {
-    lane.busy = false;
-    lane.at = Date.now();
-    if (!lane.dead && lane.mark !== ClaudeSub.signed()) {
-      ClaudeSub.close(lane);
-    }
-    if (!lane.dead) {
-      lane.idle = setTimeout(() => {
-        if (!lane.busy) {
-          ClaudeSub.close(lane);
-          ClaudeSub.grant();
-        }
-      }, IDLE);
-      lane.idle.unref?.();
-    }
+  export function free(): void {
+    SLOTS.busy -= 1;
     ClaudeSub.grant();
   }
 
-  // a lane ended: its Claude Code stopped; till it exits (killed if it
-  // takes KILL), it still counts toward the most
-  export function close(lane: Lane): void {
-    if (lane.dead) {
-      return;
+  // A call's Claude Code
+  // --------------------
+
+  // a call's Claude Code, started on its pick (holding a slot if `held`:
+  // freed as it exits); its process spawned as the SDK's own spawn does
+  // (stderr unread), but watched
+  export function start(sdk: Sdk, bin: string, ask: Ask, held: boolean): Code {
+    const box = ClaudeSub.inbox();
+    let gone = () => {};
+    const exit = new Promise<void>((ok) => (gone = ok));
+    if (held) {
+      exit.then(ClaudeSub.free);
     }
-    lane.dead = true;
-    POOL.lanes = POOL.lanes.filter((l) => l !== lane);
-    if (lane.idle !== null) {
-      clearTimeout(lane.idle);
-    }
-    if (!lane.gone) {
-      POOL.ending.add(lane);
-      lane.kill = setTimeout(() => (lane.proc === null || lane.proc.exitCode !== null || lane.proc.signalCode !== null ? ClaudeSub.exited(lane) : lane.proc.kill("SIGKILL")), KILL);
-      lane.kill.unref?.();
-    }
-    lane.box.close();
+    const code = { box, proc: null, exit, gone } as Omit<Code, "q"> as Code;
+    const spawn = (o: SpawnOptions) => {
+      const proc = child.spawn(o.command, o.args, { cwd: o.cwd, env: o.env, signal: o.signal, stdio: ["pipe", "pipe", "ignore"], windowsHide: true });
+      code.proc = proc;
+      proc.once("exit", gone);
+      proc.once("error", () => proc.pid === undefined && gone());
+      return proc;
+    };
+    const options = { ...ClaudeSub.options(ask, new AbortController(), sdk.BUILTIN_TOOL_NAMES), pathToClaudeCodeExecutable: bin, spawnClaudeCodeProcess: spawn };
     try {
-      lane.q.close();
+      code.q = sdk.query({ prompt: box.read(), options });
+    } catch (err) {
+      gone();
+      throw err;
+    }
+    return code;
+  }
+
+  // a call's Claude Code ended (the SDK's close: SIGTERM, then SIGKILL),
+  // done as it exits
+  export function close(code: Code): Promise<void> {
+    code.box.close();
+    try {
+      code.q.close();
     } catch {}
+    if (code.proc === null || code.proc.exitCode !== null || code.proc.signalCode !== null) {
+      code.gone();
+    }
+    return code.exit;
   }
 
-  // a lane's Claude Code exited: its place free; one that exits unbidden,
-  // unused, ends
-  export function exited(lane: Lane): void {
-    if (lane.gone) {
-      return;
-    }
-    lane.gone = true;
-    if (lane.kill !== null) {
-      clearTimeout(lane.kill);
-    }
-    if (!lane.dead && !lane.busy) {
-      ClaudeSub.close(lane);
-    }
-    if (POOL.ending.delete(lane) || !lane.busy) {
-      ClaudeSub.grant();
-    }
-  }
-
-  // every lane ended (the server's exit)
-  export function end(): void {
-    [...POOL.lanes].forEach(ClaudeSub.close);
-  }
-
-  // a stopped call's lane: its turn interrupted and read to its end, then
-  // let go; one that takes too long (or dies) ends
-  export function drain(lane: Lane): void {
-    const late = setTimeout(() => ClaudeSub.close(lane), DRAIN);
-    lane.q.interrupt().catch(() => {});
-    (async () => {
-      for (;;) {
-        const r = await ClaudeSub.read(lane);
-        if (r.done) {
-          throw new Died(DIED);
-        }
-        if (r.value.type === "result") {
-          return;
-        }
-      }
-    })().then(
-      () => (clearTimeout(late), ClaudeSub.release(lane)),
-      () => (clearTimeout(late), ClaudeSub.close(lane), ClaudeSub.grant()),
-    );
-  }
-
-  // a lane set for a call: a fresh conversation (if it served one), the
-  // call's model, effort and our MCP server. A stop meanwhile throws
-  // Stopped at once, the lane left half set (its caller ends it)
-  export async function prepare(lane: Lane, ask: Ask, signal: AbortSignal): Promise<string | null> {
-    if (signal.aborted) {
-      throw new Stopped();
-    }
-    let off = () => {};
-    const stop = new Promise<never>((_, no) => {
-      const halt = () => no(new Stopped());
-      signal.aborted ? halt() : signal.addEventListener("abort", halt, { once: true });
-      off = () => signal.removeEventListener("abort", halt);
+  // its next message
+  export function read(code: Code): Promise<IteratorResult<SDKMessage>> {
+    const next = code.q.next().catch((err) => {
+      throw new Died(err?.message ?? String(err));
     });
-    stop.catch(() => {});
-    const or = <T>(p: Promise<T>): Promise<T> => (p.catch(() => {}), Promise.race([p, stop]));
+    next.catch(() => {});
+    return next;
+  }
+
+  // our MCP server set for the call (a call with none, as a summary's, has
+  // no tools of ours); why it failed (null: it didn't, or a stop came)
+  export async function connect(code: Code, server: string, signal: AbortSignal): Promise<string | null> {
+    if (server === "") {
+      return null;
+    }
+    const out = await ClaudeSub.race(code.q.setMcpServers(ClaudeSub.mcp(server)), signal);
+    const err = out?.errors?.unii;
+    return err === undefined ? null : "claude-sub couldn't reach UniiChat's tools: " + err;
+  }
+
+  // a promise's value, or null once `signal` aborts
+  export function race<T>(go: Promise<T>, signal: AbortSignal): Promise<T | null> {
+    go.catch(() => {});
+    let drop = () => {};
+    const stopped = new Promise<null>((done) => {
+      const stop = () => done(null);
+      signal.aborted ? stop() : signal.addEventListener("abort", stop, { once: true });
+      drop = () => signal.removeEventListener("abort", stop);
+    });
+    return Promise.race([go, stopped]).finally(drop);
+  }
+
+  // Usage limits
+  // ------------
+
+  // when a limit Claude Code told resets (ms since 1970; null: not told).
+  // It tells seconds
+  export function reset(info: SDKRateLimitInfo): number | null {
+    const at = info.resetsAt;
+    return typeof at === "number" && at > 0 ? (at < 1e12 ? at * 1e3 : at) : null;
+  }
+
+  // a limit told, kept till its reset, or lifted: the plan's, or a model
+  // family's. One whose reset isn't told is kept PACE if asking under it
+  // bills (extra usage on), else not (the call's doubling waits pace it)
+  export function note(info: SDKRateLimitInfo): void {
+    const scope = /opus|sonnet/.exec(info.rateLimitType ?? "")?.[0] ?? "";
+    const bills = info.isUsingOverage === true || info.overageStatus === "allowed" || info.overageStatus === "allowed_warning";
+    const until = ClaudeSub.reset(info) ?? (bills ? Date.now() + PACE : null);
+    if ((info.status === "rejected" || info.isUsingOverage === true) && until !== null) {
+      LIMITS.set(scope, { until, bills });
+    } else {
+      LIMITS.delete(scope);
+    }
+  }
+
+  // the latest reset of the limits a call on `model` is under (null:
+  // none); billing: only those asking under would bill
+  export function limited(model: string, billing: boolean): number | null {
+    const now = Date.now();
+    const family = /opus|sonnet/.exec(model)?.[0];
+    const told = ["", ...(family ? [family] : [])].map((k) => LIMITS.get(k)).filter((l) => l !== undefined && l.until > now && (l.bills || !billing));
+    return told.length > 0 ? Math.max(...told.map((l) => l!.until)) : null;
+  }
+
+  // the limits told forgotten (for tests)
+  export function forget(): void {
+    LIMITS.clear();
+  }
+
+  // how long a call waits at its `n`th usage limit in a row: till the
+  // reset told (from TRIES on, at least the doubling), else a doubling up
+  // to PACE (a patient call's: AGAIN), as Agent.limit_wait does
+  export function wait(until: number | null, n: number, patient: boolean): number {
+    const back = Math.min(2 ** n * 1e3, patient ? AGAIN : PACE);
+    const left = until === null ? 0 : until - Date.now();
+    return Math.min(2 ** 31 - 1, left <= 0 ? back : n < TRIES ? left : Math.max(left, back));
+  }
+
+  // a call waits `ms` for a usage limit, its thought logged if `say`; a
+  // message sent (wake: true) or a stop ends the wait
+  export async function park(on: (ev: Event) => void, ms: number, say: boolean, signal: AbortSignal, wake: { poke: () => void }): Promise<boolean> {
+    const end = new AbortController();
+    let woke = false;
+    const stop = () => end.abort();
+    wake.poke = () => ((woke = true), stop());
+    signal.addEventListener("abort", stop, { once: true });
+    if (signal.aborted) {
+      stop();
+    }
+    if (say) {
+      on({ $: "Entry", kind: "mind", text: "The AI service reached a usage limit: asking again in " + ClaudeSub.span(ms) + "." });
+    }
     try {
-      return await ClaudeSub.set(lane, ask, or);
+      await Machine.nap(ms, end.signal);
     } finally {
-      off();
+      signal.removeEventListener("abort", stop);
+      wake.poke = () => {};
     }
+    return woke;
   }
 
-  export async function set(lane: Lane, ask: Ask, or: <T>(p: Promise<T>) => Promise<T>): Promise<string | null> {
-    if (lane.used) {
-      lane.box.say("/clear");
-      let reset = false;
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const late = new Promise<"late">((ok) => (timer = setTimeout(() => ok("late"), CLEAR)));
-      try {
-        for (;;) {
-          const r = await or(Promise.race([ClaudeSub.read(lane), late]));
-          if (r === "late" || r.done) {
-            throw new Died(r === "late" ? "Claude Code didn't clear its conversation" : DIED);
-          }
-          reset ||= r.value.type === "conversation_reset";
-          if (r.value.type === "result") {
-            if (!reset) {
-              throw new Died("Claude Code didn't clear its conversation");
-            }
-            break;
-          }
-        }
-      } finally {
-        clearTimeout(timer);
-      }
-    }
-    lane.used = true;
-    if (lane.model !== ask.model) {
-      await or(lane.q.setModel(ask.model));
-      lane.model = ask.model;
-    }
-    if (lane.effort !== ask.effort) {
-      await or(lane.q.applyFlagSettings({ effortLevel: ask.effort as any }));
-      lane.effort = ask.effort;
-    }
-    if (lane.server !== ask.server) {
-      lane.server = "";
-      const out = await or(lane.q.setMcpServers(ClaudeSub.mcp(ask.server)));
-      const err = out.errors?.unii;
-      if (err !== undefined) {
-        return "claude-sub couldn't reach UniiChat's tools: " + err;
-      }
-      lane.server = ask.server;
-    }
-    return null;
+  // a wait as people read it: "5 min", "3 h 20 min"
+  export function span(ms: number): string {
+    const min = Math.max(1, Math.round(ms / 60e3));
+    return min < 60 ? min + " min" : Math.floor(min / 60) + " h" + (min % 60 > 0 ? " " + (min % 60) + " min" : "");
   }
 
-  // the call's end, once its last turn ended (or it threw): on a lane of
-  // its key; tried once more on a fresh lane if its lane died before
-  // anything came out. A binary's copy gone since (removed by hand) is
-  // written out again
-  export async function run(ask: Ask, on: (ev: Event) => void, sent: Say[], abort: AbortController): Promise<Partial<Awaited<Try["done"]>>> {
+  // A call
+  // ------
+
+  // the call's end: its Claude Code started (a summary's once it has a
+  // slot), our MCP server set, its message in, its turn read to its end.
+  // Under a usage limit told it waits before asking (a message sent ends
+  // the wait, as at the vendor's, unless asking would bill extra usage);
+  // at one, it waits for the reset, then asks again (ran no tool: in a
+  // new Claude Code) or goes on (ON). One whose Claude Code dies before
+  // anything came out is tried once more. A binary's copy gone since
+  // (removed by hand) is written out again
+  export async function run(ask: Ask, on: (ev: Event) => void, sent: Say[], signal: AbortSignal, wake: { poke: () => void }): Promise<Partial<End>> {
     let bin = await ClaudeSub.bin();
     if (!fs.existsSync(bin)) {
-      POOL.bin = null;
+      LOADED.bin = null;
       bin = await ClaudeSub.bin();
     }
     const sdk = await ClaudeSub.sdk();
-    const key = ClaudeSub.key(bin, ask);
     let seen: Live[] = [];
     let said = false;
     const emit: Emit = (kind, text, fresh) => {
@@ -639,62 +543,85 @@ export namespace ClaudeSub {
       said = true;
       on(ev);
     };
+    const acted = { v: false };
+    let code: Code | null = null;
+    let parked = false;
+    let woke = false;
+    const sleep = async (ms: number) => {
+      woke = await ClaudeSub.park(on, ms, !parked, signal, wake);
+      parked = true;
+    };
     try {
-      for (let tries = 0; ; tries++) {
-        const lane = await ClaudeSub.take(key, ClaudeSub.rank(ask), () => ClaudeSub.start(sdk, bin, key, ask), abort.signal);
-        if (lane === null) {
-          return {};
+      for (let tries = 0, n = 0; !signal.aborted; ) {
+        const until = ClaudeSub.limited(ask.model, woke);
+        woke = false;
+        if (until !== null) {
+          await sleep(until - Date.now());
+          continue;
         }
-        let held = true;
-        try {
-          if (abort.signal.aborted) {
+        if (code === null) {
+          const held = ask.patient === true;
+          if (held && !(await ClaudeSub.slot(ask, signal))) {
             return {};
           }
-          const fail = await ClaudeSub.prepare(lane, ask, abort.signal);
+          code = ClaudeSub.start(sdk, bin, ask, held);
+          const fail = await ClaudeSub.connect(code, ask.server, signal);
           if (fail !== null) {
             return { text: fail, stop: "down" };
           }
-          if (abort.signal.aborted) {
+          if (signal.aborted) {
             return {};
           }
-          const out = await ClaudeSub.turn(lane, ask, emit, log, sent, abort, () => (seen = []));
-          if (out === null) {
-            held = false;
-            ClaudeSub.drain(lane);
-            return {};
-          }
-          if (out.stop === "down" && out.text === SIGN_IN) {
-            ClaudeSub.close(lane);
-          }
-          return out;
-        } catch (err: any) {
-          ClaudeSub.close(lane);
-          if (err instanceof Stopped) {
-            return {};
-          }
-          if (!(err instanceof Died) || said || abort.signal.aborted || tries > 0) {
+          code.box.put(ask.blocks.filter((b) => b.text !== "").map((b) => b.text), ask.imgs ?? []);
+        } else if (n > 0) {
+          const says = sent.splice(0);
+          says.forEach((say) => log({ $: "Entry", kind: "user", text: say.text }));
+          code.box.put([ON, ...says.map((say) => say.text).filter((t) => t !== "")], says.flatMap((say) => say.imgs));
+        }
+        let out: Out | null;
+        try {
+          out = await ClaudeSub.turn(code, emit, log, sent, signal, acted, () => (seen = []));
+        } catch (err) {
+          if (!(err instanceof Died) || said || signal.aborted || tries > 0) {
             throw err;
           }
-        } finally {
-          if (held) {
-            ClaudeSub.release(lane);
-          }
+          tries += 1;
+          void ClaudeSub.close(code);
+          code = null;
+          continue;
         }
+        if (out === null || out.limit === undefined) {
+          return out ?? {};
+        }
+        n += 1;
+        if (!acted.v) {
+          void ClaudeSub.close(code);
+          code = null;
+        }
+        await sleep(ClaudeSub.wait(out.limit.until, n, ask.patient === true));
       }
+      return {};
     } finally {
-      if (abort.signal.aborted) {
+      if (code !== null) {
+        void ClaudeSub.close(code);
+      }
+      if (signal.aborted) {
         Agent.fail("stopped", seen).entries.forEach((e) => on({ $: "Entry", ...e }));
       }
     }
   }
 
-  // one call's turn on its lane, read to its result (null: stopped
-  // mid-turn; the lane is still in it)
-  export async function turn(lane: Lane, ask: Ask, emit: Emit, log: (ev: Event) => void, sent: Say[], abort: AbortController, fresh: () => void): Promise<Partial<Awaited<Try["done"]>> | null> {
-    const stopped = new Promise<"stop">((ok) => (abort.signal.aborted ? ok("stop") : abort.signal.addEventListener("abort", () => ok("stop"), { once: true })));
-    lane.box.put(ask.blocks.filter((b) => b.text !== "").map((b) => b.text), ask.imgs ?? []);
+  // a turn read to its result (null: stopped); a tool of ours run, or a
+  // message sent taken, marks the call `acted`. At usage billed past the
+  // plan the turn is interrupted: its end a limit, unless its answer came
+  // whole (paid already) with no message to take (another request)
+  export async function turn(code: Code, emit: Emit, log: (ev: Event) => void, sent: Say[], signal: AbortSignal, acted: { v: boolean }, fresh: () => void): Promise<Out | null> {
+    const stopped = new Promise<"stop">((ok) => (signal.aborted ? ok("stop") : signal.addEventListener("abort", () => ok("stop"), { once: true })));
+    let info: SDKRateLimitInfo | null = null;
+    let hit = false;
+    let over = false;
     for (;;) {
-      const r = await Promise.race([ClaudeSub.read(lane), stopped]);
+      const r = await Promise.race([ClaudeSub.read(code), stopped]);
       if (r === "stop") {
         return null;
       }
@@ -705,37 +632,53 @@ export namespace ClaudeSub {
       if (msg.type === "stream_event" && msg.parent_tool_use_id === null) {
         Anthropic.live(msg.event, emit);
       }
+      if (msg.type === "rate_limit_event") {
+        info = msg.rate_limit_info;
+        ClaudeSub.note(info);
+        if (info.isUsingOverage === true && !over) {
+          over = true;
+          code.q.interrupt().catch(() => {});
+        }
+      }
       if (msg.type === "assistant" && msg.error === undefined) {
         Anthropic.entries(msg.message.content).forEach((e) => log({ $: "Entry", ...e }));
+        acted.v ||= msg.message.content.some((b: any) => b.type === "tool_use" && !WEB.includes(b.name));
         fresh();
       }
       if (msg.type === "assistant" && msg.error === "authentication_failed") {
-        await ClaudeSub.settle(lane);
+        await ClaudeSub.settle(code);
         return { text: SIGN_IN, stop: "down" };
       }
+      hit ||= msg.type === "assistant" && msg.error === "rate_limit";
       if (msg.type === "user" && Array.isArray(msg.message.content)) {
         ClaudeSub.backs(msg.message.content).forEach((e) => log({ $: "Entry", ...e }));
       }
       if (msg.type !== "result") {
         continue;
       }
-      if (msg.subtype !== "success" || msg.is_error) {
-        const why = msg.subtype === "success" ? msg.result : msg.errors.join("; ");
+      const ok = msg.subtype === "success" && !msg.is_error;
+      const why = msg.subtype === "success" ? msg.result : msg.errors.join("; ");
+      if ((!ok && (hit || over || info?.status === "rejected")) || (over && sent.length > 0)) {
+        acted.v ||= ok;
+        return { limit: { until: info && ClaudeSub.reset(info), text: why } };
+      }
+      if (!ok) {
         return { text: why || msg.subtype, stop: "down" };
       }
       const says = sent.splice(0);
       if (says.length === 0) {
         return { ok: true, text: msg.result.trim() };
       }
+      acted.v = true;
       says.forEach((say) => log({ $: "Entry", kind: "user", text: say.text }));
-      lane.box.put(says.map((say) => say.text).filter((t) => t !== ""), says.flatMap((say) => say.imgs));
+      code.box.put(says.map((say) => say.text).filter((t) => t !== ""), says.flatMap((say) => say.imgs));
     }
   }
 
-  // a lane's turn read to its result, what's left of it unseen
-  export async function settle(lane: Lane): Promise<void> {
+  // a turn read to its result, what's left of it unseen
+  export async function settle(code: Code): Promise<void> {
     for (;;) {
-      const r = await ClaudeSub.read(lane);
+      const r = await ClaudeSub.read(code);
       if (r.done || r.value.type === "result") {
         return;
       }
@@ -748,8 +691,7 @@ export namespace ClaudeSub {
     return results.map((b) => ({ kind: "echo", text: (b.is_error ? "error: " : "") + (AskAI.show(b.content) || "(no output)"), of: b.tool_use_id }));
   }
 
-  // the messages Claude Code reads, as they come; closed: it ends. say: a
-  // plain one (a command: /clear)
+  // the messages Claude Code reads, as they come; closed: it ends
   export function inbox() {
     const queue: SDKUserMessage[] = [];
     let wake = () => {};
@@ -759,7 +701,6 @@ export namespace ClaudeSub {
       wake();
     };
     const put = (texts: string[], imgs: Img[]) => push(Anthropic.content(texts, imgs));
-    const say = (text: string) => push(text);
     const close = () => {
       shut = true;
       wake();
@@ -775,7 +716,7 @@ export namespace ClaudeSub {
         await new Promise<void>((ok) => (wake = ok));
       }
     }
-    return { put, say, close, read };
+    return { put, close, read };
   }
 
 }
