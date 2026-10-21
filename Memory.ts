@@ -1124,7 +1124,11 @@ ${Memory.cut(line)}| ← LIMIT`;
   // screen and fetches their text (/api/tree): a chat has thousands. A
   // card cut, clicked or tapped, grows over its neighbours, as much up
   // as down (kept on screen), its shadow on them; again, Escape or
-  // another click shuts it
+  // another click shuts it. Left of the packed column its nodes' halves,
+  // and theirs, are there too, with their lines: each a one-line card,
+  // squeezed into its parent's height, as Google's bracket shows the
+  // round before mid-swipe; once a swipe (touch, wheel, a mouse drag,
+  // ‹ ›) settles on them they ease to full height, their lines along
   export function* page(mem: Memory): Generator<string> {
     const esc   = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;");
     // the nodes built: those whose slot in the tree's index has a day
@@ -1144,7 +1148,7 @@ header > a { display: grid; place-items: center; text-decoration: none; } header
 .top [hidden] { display: none; } .note { position: absolute; left: 0; right: 0; padding: 0 14px; font: 12.5px/1.45 var(--sans); color: var(--mid); }
 section { display: none; flex: 1; overflow: auto; padding: 0 20px 20px; outline: none; font: 15px/1.55 var(--serif); text-wrap: pretty; } section:target { display: block; }
 h4 { margin: .8em 0 .2em; font: 600 11.5px/1.5 var(--sans); color: var(--mid); } pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
-#TREE { --g: 2em; gap: var(--g); scroll-snap-type: x mandatory; scroll-padding: 0 20px; } #TREE:target { display: flex; }
+#TREE { --g: 30px; gap: var(--g); scroll-snap-type: x mandatory; scroll-padding: 0 20px; } #TREE:target { display: flex; }
 #TREE::after { content: ""; flex: 0 0 calc(100% - min(22em, 65vw) - var(--g)); }
 .col { flex: 0 0 min(22em, 65vw); position: relative; scroll-snap-align: start; }
 .col h3 { position: sticky; top: 0; z-index: 2; margin: 0; height: 3em; font: 600 .8em/3em var(--sans); letter-spacing: .06em; color: var(--mid); background: var(--paper); cursor: pointer; margin-right: calc(0px - var(--g)); } .col h3:hover { color: var(--ink); }
@@ -1156,6 +1160,11 @@ h4 { margin: .8em 0 .2em; font: 600 11.5px/1.5 var(--sans); color: var(--mid); }
 .up::after { content: ""; position: absolute; left: 100%; width: calc(var(--g) / 2); top: var(--c, 50%); border-top: 1px solid var(--frame); }
 .dn::before { content: ""; position: absolute; right: 100%; width: calc(var(--g) / 2); top: var(--t); height: calc(var(--h) + 1px); border-left: 1px solid var(--frame); background: linear-gradient(var(--frame), var(--frame)) 0 var(--m) / 100% 1px no-repeat; }
 .s.user pre, .s.unii pre { font: 16px/1.55 var(--sans); } .s.tool pre, .s.echo pre { font: 12.5px/1.5 var(--mono); }
+.s { padding-bottom: var(--pb, .7em); } .s h4 { margin-top: var(--hm, .7em); } .s pre { opacity: var(--o, 1); }
+.s.one { cursor: pointer; } .s.line h4 { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } .s.thin h4 { visibility: hidden; }
+.s.one pre { -webkit-mask-image: linear-gradient(#000 calc(100% - 2.4em), transparent 90%); mask-image: linear-gradient(#000 calc(100% - 2.4em), transparent 90%); }
+#TREE.drag { scroll-snap-type: none; user-select: none; cursor: grabbing; }
+@media (prefers-reduced-motion: reduce) { .s.ease { transition: none; } }
 @media (max-width: 600px) { section { padding: 0 14px 14px; } #TREE { scroll-padding: 0 14px; } .top { padding: 4px 14px 0; } }
 </style>
 <noscript><style>#VIEW { display: block; }</style></noscript>
@@ -1176,6 +1185,8 @@ h4 { margin: .8em 0 .2em; font: 600 11.5px/1.5 var(--sans); color: var(--mid); }
 <script>
 const N = ${mem.count}, B = ${JSON.stringify(has)}, V = ${JSON.stringify(mem.view.parts.map((part) => [part.l, part.i]))};
 const tree = document.getElementById("TREE"), cols = [...tree.children], em = parseFloat(getComputedStyle(tree).fontSize), G = .75 * em, Y = 2.6 * em, HC = 9 * em;
+// a card's head: its line's height, its margin over it; its bottom padding
+const HL = 1.5 * 11.5, HM = .7 * 11.5, PB = .7 * em, calm = matchMedia("(prefers-reduced-motion: reduce)");
 tree.style.setProperty("--card", HC + "px");
 const T = B.length - 1, vt = Math.max(-1, ...V.map((p) => p[0])), seen = new Set(V.map((p) => p.join(".")));
 const has = (l, i) => (l < 0 ? i < N : B[l][i] === "1"), at = (l, i) => i * 2 ** Math.max(0, l), len = (l) => 2 ** Math.max(0, l);
@@ -1204,10 +1215,28 @@ const layout = (L) => {
     }
   }
   sums();
-  // each column's cards in order: [l, i, top, height, F's cards from, to]
+  // each column's cards in order: [l, i, top, height, the messages it
+  // holds from, to, how far left of F (1: F's halves)]
   const cards = cols.map(() => []);
-  F.forEach(([l, i], k) => cards[L + 1].push([l, i, P[k] + (slot[k] - G - height(l, i)) / 2, height(l, i), k, k + 1]));
-  ups.forEach((list, l) => list.forEach(([i, a, b]) => cards[l + 1].push([l, i, (P[a] + P[b] - G - height(l, i)) / 2, height(l, i), a, b])));
+  // node l.i's halves (a LVL0's: its message), at y, in its height h,
+  // one under the other, a gap between, then theirs: in order, as each
+  // column's go down; too thin to see, none
+  const halves = (l, i, y, h, d) => {
+    if (l < 0) return;
+    const n = len(l) / len(l - 1), g = Math.min(G, .08 * h), k = (h - (n - 1) * g) / n;
+    if (k < 2) return;
+    for (let j = 0; j < n; j++) {
+      const c = at(l, i) / len(l - 1) + j, t = y + j * (k + g);
+      cards[l].push([l - 1, c, t, k, at(l - 1, c), at(l - 1, c) + len(l - 1), d]);
+      halves(l - 1, c, t, k, d + 1);
+    }
+  };
+  F.forEach(([l, i], k) => {
+    const t = P[k] + (slot[k] - G - height(l, i)) / 2;
+    cards[L + 1].push([l, i, t, height(l, i), A[k], A[k] + len(l), 0]);
+    halves(l, i, t, height(l, i), 1);
+  });
+  ups.forEach((list, l) => list.forEach(([i, a, b]) => cards[l + 1].push([l, i, (P[a] + P[b] - G - height(l, i)) / 2, height(l, i), at(l, i), at(l, i) + len(l), 0])));
   // then its lines, and from where to where it and they reach: a card is
   // drawn while either is near the screen, so a line never goes missing
   // for its card being far
@@ -1248,13 +1277,15 @@ const fill = (s, x) => {
   s.fresh = true;
 };
 // the texts not here yet of the cards drawn, then of those within four
-// screens, in the columns on screen: a quick scroll finds them here
-const near = () => [Math.floor(tree.scrollLeft / step()), (tree.scrollLeft + tree.clientWidth) / step()];
+// screens, in the columns on screen and the one left of them (its cards
+// one line, but whole once a swipe settles there): a quick scroll finds
+// them here; not those further left, as thin
+const near = () => [Math.floor(tree.scrollLeft / step()) - 1, (tree.scrollLeft + tree.clientWidth) / step()];
 const load = () => {
-  const y = tree.scrollTop, sh = tree.clientHeight, [c0, c1] = near(), want = [...shown.keys()];
+  const y = tree.scrollTop, sh = tree.clientHeight, [c0, c1] = near(), want = [...shown.keys()].filter((k) => !shown.get(k).thin);
   plan.cards.forEach((list, c) => {
-    for (let x = c < c0 || c > c1 ? list.length : lo(list, (q) => q[8] >= y - 4 * sh); x < list.length && list[x][7] <= y + 5 * sh; x++) {
-      want.push(list[x][0] + "." + list[x][1]);
+    for (let x = c < c0 || c > c1 ? list.length : lo(list, (q) => q[9] >= y - 4 * sh); x < list.length && list[x][8] <= y + 5 * sh; x++) {
+      list[x][6] < 2 && want.push(list[x][0] + "." + list[x][1]);
     }
   });
   const keys = [...new Set(want)].filter((k) => !got.has(k) && has(...k.split(".").map(Number)));
@@ -1267,19 +1298,20 @@ const load = () => {
     fetch("/api/tree?get=" + part.join(",")).then((r) => r.json()).then(put, () => put(part.map((k) => ({ h: k, t: "Could not load this: reload the page." }))));
   }
 };
-// the cards near y; e < 1: on the way from \`old\`, their lines' too
+// the cards near y; e < 1: on the way from \`old\` (a card not in it
+// from its parent's middle), their sizes and lines too
 const draw = (y = tree.scrollTop, e = 1, old) => {
   const p = plan, sh = tree.clientHeight, keep = new Set(), [c0, c1] = near();
   cols.forEach((col, c) => {
     col.style.height = Y + Math.max(p.total, e < 1 ? old.total : 0) + 4 * em + "px";
     const list = p.cards[c];
-    for (let x = c < c0 || c > c1 ? list.length : lo(list, (q) => q[8] >= y - sh / 2); x < list.length && list[x][7] <= y + 1.5 * sh; x++) {
-      const [l, i, t, h, , , [up, ...v]] = list[x], k = l + "." + i, w = e < 1 && old.get(k);
+    for (let x = c < c0 || c > c1 ? list.length : lo(list, (q) => q[9] >= y - sh / 2); x < list.length && list[x][8] <= y + 1.5 * sh; x++) {
+      const [l, i, t, h, , , , [up, ...v]] = list[x], k = l + "." + i, w = e < 1 && (old.get(k) ?? from(old, l, i));
       const s = shown.get(k) ?? make(l, i);
       s.parentNode !== col && col.append(s);
       shown.set(k, s);
       keep.add(k);
-      s.v = [t, ...v].map((z, j) => (w ? w[j] + (z - w[j]) * e : z));
+      s.v = [t, h, ...v].map((z, j) => (w ? w[j] + (z - w[j]) * e : z));
       s.classList.toggle("up", up === 1);
       s.classList.toggle("dn", v[1] >= 0);
       pos(s);
@@ -1293,8 +1325,9 @@ const draw = (y = tree.scrollTop, e = 1, old) => {
   back.disabled = tree.scrollLeft < 1;
   next.disabled = tree.scrollLeft + tree.clientWidth >= tree.scrollWidth - 1;
   load();
-  // the cards whose text came: is it cut? (all read, then all marked)
-  const fresh = [...shown.values()].filter((s) => s.fresh);
+  // the cards whose text came, whole: is it cut? (all read, then all
+  // marked; a one-line card's once it's whole)
+  const fresh = [...shown.values()].filter((s) => s.fresh && !s.one);
   fresh.map((s) => s.lastChild.scrollHeight > s.lastChild.clientHeight + 1).forEach((cut, j) => {
     const s = fresh[j];
     s.fresh = false;
@@ -1303,11 +1336,33 @@ const draw = (y = tree.scrollTop, e = 1, old) => {
   });
 };
 // a card where plan puts it (s.v), its lines too; grown (big), dy from
-// there, its lines kept where they were
+// there, its lines kept where they were. Less than whole (one), its text
+// fades and its head goes mid it, one line (none, too thin)
 const pos = (s) => {
-  const [t, a, h, m] = s.v, d = s === big ? s.dy : 0;
+  const [t, hc, a, h, m] = s.v, d = s === big ? s.dy : 0, f = Math.max(0, Math.min(1, 2 * hc / HC - 1)), one = hc < HC - 1;
   s.style.top = Y + t + d + "px";
-  [["--t", a - d], ["--h", h], ["--m", m], ["--c", HC / 2 - d]].forEach(([name, z]) => s.style.setProperty(name, z + "px"));
+  s === big || (s.style.height = hc + "px");
+  [["--t", a - d], ["--h", h], ["--m", m], ["--c", hc / 2 - d], ["--hm", Math.max(0, (1 - f) * (hc - HL) / 2 + f * HM)], ["--pb", f * PB]].forEach(([name, z]) => s.style.setProperty(name, z + "px"));
+  s.style.setProperty("--o", f);
+  if (one !== !!s.one) {
+    s.one = one;
+    s.classList.toggle("one", one);
+    s.tabIndex = one ? -1 : 0;
+    s.fresh = !s.classList.contains("wait");
+  }
+  // (its head one line while its text hardly shows, so it wraps unseen)
+  s.classList.toggle("line", f < .2);
+  s.thin = hc < HL;
+  s.classList.toggle("thin", s.thin);
+};
+// where a card not in plan \`old\` comes from: its parent's (or theirs')
+// middle, no height, no lines
+const from = (old, l, i) => {
+  for (let u = l + 1; u <= T; u++) {
+    const w = old.get(u + "." + Math.floor(at(l, i) / len(u)));
+    if (w) return [w[0] + w[1] / 2, 0, 0, -1, 0];
+  }
+  return null;
 };
 // a change of size or place eased (ease: on top meanwhile)
 const ease = (s) => {
@@ -1353,6 +1408,7 @@ const shut = (now) => {
 // a click on a card: it shuts if grown (unless its text is being
 // selected), else the one grown shuts and it grows, if cut
 const press = (s) => {
+  if (s.one) return shut(), slide(cols.indexOf(s.parentNode));
   const sel = getSelection();
   if (s === big) return (sel.isCollapsed || !s.contains(sel.anchorNode)) && shut();
   shut();
@@ -1380,17 +1436,22 @@ const redo = () => {
 };
 const pack = () => {
   const to = Math.max(-1, Math.min(T, Math.round(tree.scrollLeft / step()) - 1));
+  // (a scroll event coming after the end, from where it ended, is no slide)
+  left = tree.scrollLeft;
   sliding = false;
   goal = null;
   if (to === L) return moving || redo();
   shut(true);
-  const a = anchor(), old = new Map([...shown].map(([k, s]) => [k, s.v])), y0 = tree.scrollTop, t0 = performance.now(), me = ++moving;
+  // where every card was: in the plan, or, if drawn, where it's drawn
+  const a = anchor(), old = new Map(), y0 = tree.scrollTop, t0 = performance.now(), me = ++moving, D = calm.matches ? 0 : 300;
+  plan.cards.forEach((list) => list.forEach((q) => old.set(q[0] + "." + q[1], [q[2], q[3], ...q[7].slice(1)])));
+  shown.forEach((s, k) => old.set(k, s.v));
   old.total = plan.total;
   L = to;
   plan = layout(L);
   const y1 = place(a, plan);
   const frame = (now) => {
-    const e = Math.min(1, (now - t0) / 300), f = 1 - (1 - e) ** 3;
+    const e = D ? Math.min(1, (now - t0) / D) : 1, f = 1 - (1 - e) ** 3;
     if (me === moving) {
       e < 1 ? (draw(y0 + (y1 - y0) * f, f, old), requestAnimationFrame(frame)) : done();
     }
@@ -1399,7 +1460,14 @@ const pack = () => {
   requestAnimationFrame(frame);
 };
 const end = "onscrollend" in tree;
-tree.addEventListener(end ? "scrollend" : "scroll", () => { clearTimeout(wait); wait = setTimeout(pack, end ? 0 : 150); });
+// (not while a mouse drags it: each step it sets ends a scroll; its
+// slide to a column, once let go, restores the snap)
+tree.addEventListener(end ? "scrollend" : "scroll", () => {
+  if (drag?.on) return;
+  tree.classList.remove("drag");
+  clearTimeout(wait);
+  wait = setTimeout(pack, end ? 0 : 150);
+});
 // a slide the user starts mid-ease ends the ease where it is (setting
 // scrollTop would stop the slide)
 tree.addEventListener("scroll", () => {
@@ -1431,8 +1499,42 @@ onhashchange();
 const slide = (c) => {
   goal = Math.max(0, Math.min(cols.length - 1, c));
   done();
-  tree.scrollTo({ left: goal * step(), behavior: "smooth" });
+  tree.scrollTo({ left: goal * step(), behavior: calm.matches ? "instant" : "smooth" });
 };
+// a mouse dragging the tree sideways moves it, as a finger does (its
+// snap off meanwhile); let go, it slides to the nearest column. A drag
+// up or down, or one from a card grown, selects text as before; a click
+// ending a drag does nothing
+let drag = null, dragged = false;
+tree.addEventListener("pointerdown", (e) => {
+  dragged = false;
+  const bar = e.target === tree && e.offsetX >= tree.clientWidth;
+  drag = e.pointerType === "mouse" && e.button === 0 && !bar && !e.target.closest(".big, h3") ? { x: e.clientX, y: e.clientY, left: tree.scrollLeft, id: e.pointerId, on: false } : null;
+});
+addEventListener("pointermove", (e) => {
+  if (!drag || e.pointerId !== drag.id) return;
+  const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+  if (!drag.on) {
+    if (Math.abs(dy) > 8 && Math.abs(dy) > Math.abs(dx)) return void (drag = null);
+    if (Math.abs(dx) < 8) return;
+    drag.on = dragged = true;
+    shut(true);
+    tree.classList.add("drag");
+  }
+  getSelection().removeAllRanges();
+  tree.scrollLeft = drag.left - dx;
+});
+const drop = (e) => {
+  if (!drag || e.pointerId !== drag.id) return;
+  const on = drag.on;
+  drag = null;
+  if (!on) return;
+  const c = Math.max(0, Math.min(Math.round(tree.scrollLeft / step()), Math.ceil((tree.scrollWidth - tree.clientWidth) / step())));
+  Math.abs(tree.scrollLeft - c * step()) < 1 ? (tree.classList.remove("drag"), pack()) : slide(c);
+};
+addEventListener("pointerup", drop);
+addEventListener("pointercancel", drop);
+tree.addEventListener("click", (e) => dragged && ((dragged = false), e.stopPropagation(), e.preventDefault()), true);
 const here = () => goal ?? Math.round(tree.scrollLeft / step());
 back.onclick = () => slide(here() - 1);
 next.onclick = () => slide(Math.min(here() + 1, Math.ceil((tree.scrollWidth - tree.clientWidth) / step())));
