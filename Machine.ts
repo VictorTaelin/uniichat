@@ -17,7 +17,7 @@ import * as path from "node:path";
 import type { Out } from "./Agent.ts";
 import { CAP, clip, clip_end } from "./Clip.ts";
 import { Computer } from "./Computer.ts";
-import { FIT, IMAGE, image_kind, PIXELS } from "./View.ts";
+import { FIT, HEAD, IMAGE, image_kind, PIXELS } from "./View.ts";
 
 // Types
 // =====
@@ -72,6 +72,13 @@ const INDEXED = /\b(mov|mp4|matroska|webm|avi)\b/;
 // frames further apart than this, in seconds, are each sought on their
 // own, rather than all decoded from the first
 const SPARSE = 2;
+
+// the packets read past a range's end: a frame shows after those decoded
+// before it, at most this many later
+const REORDER = 16;
+
+// the smallest side of a frame on a sheet, in px
+const CELL = 16;
 
 const EDIT = { type: "object", properties: { path: STR, old: STR, new: STR, all: { type: "boolean" } }, required: ["path", "old", "new"] };
 
@@ -150,10 +157,14 @@ export namespace Machine {
           return await Machine.shell(cwd, String(input.command), signal);
         }
         case "read": {
-          const data = fs.readFileSync(file);
-          const kind = image_kind(data);
-          if (kind !== null) {
-            return await Machine.image(data, kind, Machine.side(input.max_side));
+          const kind = image_kind(Machine.head(file));
+          const data = kind === null ? null : fs.readFileSync(file);
+          const shown = data === null ? null : await Machine.image(data, kind!, Machine.side(input.max_side));
+          if (shown !== null) {
+            return shown;
+          }
+          if (data?.includes(0)) {
+            return { text: "Not a readable " + kind + " (" + data.length + " bytes).", fail: true };
           }
           return Machine.read(file, Number(input.offset ?? 1), Number(input.limit ?? Infinity), Number(input.at ?? 0));
         }
@@ -281,76 +292,114 @@ export namespace Machine {
     return { text: text.slice(at, end).replace(/\n$/, "") + shown, fail: false };
   }
 
+  // a file's first HEAD bytes
+  export function head(file: string): Buffer {
+    const fd = fs.openSync(file, "r");
+    try {
+      const buf = Buffer.alloc(HEAD);
+      return buf.subarray(0, fs.readSync(fd, buf, 0, HEAD, 0));
+    } finally {
+      fs.closeSync(fd);
+    }
+  }
+
   // the longest side an image goes at: max_side, if given, up to FIT
   export function side(max: unknown): number {
     const n = Math.floor(Number(max));
     return n >= 1 && n < FIT ? n : FIT;
   }
 
-  // an image file as models get it: as is, if no larger than side and of
-  // IMAGE bytes at most; else scaled to fit side, as a JPEG (a JPEG's) or
-  // a WebP (which keeps any transparency)
-  export async function image(data: Buffer, kind: string, side: number): Promise<Out> {
-    const img  = new Bun.Image(data);
-    const size = await img.metadata().catch(() => null);
+  // an image file as models get it, decoded (null: it isn't, as its
+  // header said): as is, if no larger than side, of IMAGE bytes at most
+  // and no GIF (an animated one goes as its first frame); else fit to
+  // side, as a PNG or WebP (a JPEG's as a JPEG), then as a JPEG, smaller
+  // each time, till it takes IMAGE bytes at most
+  export async function image(data: Buffer, kind: string, side: number): Promise<Out | null> {
+    const size = await new Bun.Image(data).metadata().catch(() => null);
     if (size === null) {
-      return { text: "Not a readable " + kind + " (" + data.length + " bytes).", fail: true };
+      return null;
     }
     const { width: w0, height: h0 } = size;
     if (w0 * h0 > PIXELS) {
       return { text: "An image of " + w0 + "x" + h0 + ": too many pixels to open.", fail: true };
     }
     const k = Math.min(1, side / Math.max(w0, h0));
-    if (k === 1 && data.length <= IMAGE) {
-      return { text: "[image " + w0 + "x" + h0 + "]", fail: false, imgs: [{ type: kind, data: data.toString("base64") }] };
+    const kinds = kind === "image/jpeg" ? ["jpeg"] : ["png", "webp", "jpeg"];
+    for (let [w, h] = [Math.max(1, Math.round(w0 * k)), Math.max(1, Math.round(h0 * k))]; ; [w, h] = [Math.max(1, Math.round(w * 0.75)), Math.max(1, Math.round(h * 0.75))]) {
+      for (const as of kinds) {
+        const fit = new Bun.Image(data).resize(w, h);
+        const out = await (as === "png" ? fit.png() : as === "webp" ? fit.webp({ quality: 85 }) : fit.jpeg({ quality: 85 })).bytes().catch(() => null);
+        if (out === null) {
+          return null;
+        }
+        if (k === 1 && w === w0 && kind !== "image/gif" && data.length <= IMAGE) {
+          return { text: "[image " + w0 + "x" + h0 + "]", fail: false, imgs: [{ type: kind, data: data.toString("base64") }] };
+        }
+        if (out.length <= IMAGE || w * h <= 64) {
+          const how = w === w0 && h === h0 ? "" : ", scaled from " + w0 + "x" + h0;
+          return { text: "[image " + w + "x" + h + how + "]", fail: false, imgs: [{ type: "image/" + as, data: Buffer.from(out).toString("base64") }] };
+        }
+      }
     }
-    const [w, h] = [Math.max(1, Math.round(w0 * k)), Math.max(1, Math.round(h0 * k))];
-    const fit  = img.resize(w, h);
-    const jpeg = kind === "image/jpeg";
-    const out  = await (jpeg ? fit.jpeg({ quality: 85 }) : fit.webp({ quality: 85 })).bytes();
-    const type = jpeg ? "image/jpeg" : "image/webp";
-    return { text: "[image " + w + "x" + h + ", scaled from " + w0 + "x" + h0 + "]", fail: false, imgs: [{ type, data: Buffer.from(out).toString("base64") }] };
   }
 
   // frames of a video (input: view_video's) on one sheet, as ffmpeg makes
   // it, with a line on the whole video from ffprobe. The frames taken are
-  // start, start + step... up to end (frame numbers; seconds turn into
-  // them at the video's frame rate). ffmpeg seeks to start (half a frame
-  // early, so it lands on it; each frame stamped with its time from the
-  // file's start), where the container lets it (INDEXED), and decodes on
-  // the CPU: a few frames a call, the same
-  // on every machine
+  // start, start + step... up to end, by number (seconds: the frames in
+  // them). Each frame's time comes from its packet's (ffprobe), read up to
+  // end, so a frame's number holds in a variable frame rate too. ffmpeg
+  // seeks to start (between it and the frame before), where the container
+  // lets it (INDEXED), else it decodes from the file's start; one seek per
+  // frame if they are SPARSE apart. It decodes on the CPU: a few frames a
+  // call, the same on every machine
   export async function video(file: string, input: any, signal: AbortSignal): Promise<Out> {
-    if (["ffmpeg", "ffprobe"].some((bin) => Bun.which(bin, { PATH: process.env.PATH ?? "" }) === null)) {
+    const [ffmpeg, ffprobe] = ["ffmpeg", "ffprobe"].map((bin) => Bun.which(bin, { PATH: process.env.PATH ?? "" }));
+    if (ffmpeg === null || ffprobe === null) {
       return { text: "view_video needs ffmpeg and ffprobe, which aren't installed on this device. Install ffmpeg (e.g. apt install ffmpeg / brew install ffmpeg / winget install ffmpeg) and try again.", fail: true };
     }
-    const shown = ["stream=codec_name,width,height,avg_frame_rate,r_frame_rate,nb_frames,duration", "format=duration,format_name"].join(":");
-    const probe = await Machine.exec(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", shown, "-of", "json", file], signal);
+    const shown = "stream=index,codec_name,width,height,sample_aspect_ratio,avg_frame_rate,r_frame_rate,nb_frames,duration:stream_side_data=rotation:format=duration,format_name,start_time";
+    const probe = await Machine.exec([ffprobe, "-v", "error", "-select_streams", "V:0", "-show_entries", shown, "-of", "json", file], signal);
     if (probe.code !== 0) {
       return { text: "ffprobe: " + probe.err.trim(), fail: true };
     }
     const json   = JSON.parse(probe.out.toString());
     const stream = json.streams?.[0];
-    if (stream === undefined) {
+    if (!(stream?.width > 0 && stream.height > 0)) {
       return { text: "No video stream in " + input.path + ".", fail: true };
     }
+    const sec    = input.unit === "second";
+    const given  = (x: unknown) => x !== undefined && x !== null;
+    const [s0, s1] = [given(input.start) ? Number(input.start) : 0, given(input.end) ? Number(input.end) : Infinity];
+    // the frames' times, from the file's start, in order: up to the
+    // range's end (and REORDER packets past it), or all (whole)
+    const upto   = s1 === Infinity ? [] : ["-read_intervals", sec ? "%+" + (s1 + 1) : "%+#" + (Math.round(s1) + 1 + REORDER)];
+    const packs  = await Machine.exec([ffprobe, "-v", "error", "-select_streams", String(stream.index), ...upto, "-show_entries", "packet=pts_time", "-of", "csv=p=0", file], signal);
+    const lines  = packs.out.toString().split("\n").filter((l) => l.trim() !== "");
+    const zero   = Number(json.format?.start_time) || 0;
+    const read   = packs.code === 0 && lines.length > 0 && lines.every((l) => Number.isFinite(parseFloat(l)));
+    const sorted = read ? lines.map((l) => parseFloat(l) - zero).sort((a, b) => a - b) : null;
+    const whole  = upto.length === 0 || (sec ? sorted !== null && sorted[sorted.length - 1] < s1 + 0.5 : lines.length < Math.round(s1) + 1 + REORDER);
+    const times  = sorted === null || whole ? sorted : sec ? sorted.filter((t) => t <= s1 + 0.5) : sorted.slice(0, sorted.length - REORDER);
     const fps    = Machine.rate(stream.avg_frame_rate) || Machine.rate(stream.r_frame_rate);
     const secs   = Number(stream.duration ?? json.format?.duration);
-    const exact  = Number(stream.nb_frames) > 0;
-    const frames = exact ? Number(stream.nb_frames) : Math.round(secs * fps);
-    const total  = frames > 0 ? (exact ? "" : "about ") + frames + " frames (0-" + (frames - 1) + ")" : "frame count unknown";
-    const [w0, h0] = [Number(stream.width), Number(stream.height)];
-    const about  = input.path + ": " + (secs > 0 ? +secs.toFixed(3) + " s, " : "") + +fps.toFixed(3) + " fps, " + total + ", " + w0 + "x" + h0 + ", " + stream.codec_name;
-    const sec    = input.unit === "second";
-    if (sec && !(fps > 0)) {
-      return { text: about + "\nIts frame rate is unknown: give start and end in frames.", fail: true };
+    const nb     = Number(stream.nb_frames) > 0 ? Number(stream.nb_frames) : times !== null && whole ? times.length : 0;
+    const total  = nb > 0 ? nb + " frames (0-" + (nb - 1) + ")" : secs > 0 && fps > 0 ? "about " + Math.round(secs * fps) + " frames" : "frame count unknown";
+    const turned = Math.abs(Number(stream.side_data_list?.find((d: any) => d.rotation !== undefined)?.rotation) || 0) % 180 === 90;
+    const [sa, sb] = String(stream.sample_aspect_ratio ?? "").split(":").map(Number);
+    const wide   = Number(stream.width) * (sa > 0 && sb > 0 ? sa / sb : 1);
+    const [w0, h0] = turned ? [Number(stream.height), wide] : [wide, Number(stream.height)];
+    const about  = input.path + ": " + (secs > 0 ? +secs.toFixed(3) + " s, " : "") + +fps.toFixed(3) + " fps, " + total + ", " + Math.round(w0) + "x" + Math.round(h0) + ", " + stream.codec_name;
+    if (sec && times === null && !(fps > 0)) {
+      return { text: about + "\nIts frame times are unknown: give start and end in frames.", fail: true };
     }
-    const at     = (x: unknown, or: number) => (x === undefined || x === null ? or : Math.round(Number(x) * (sec ? fps : 1)));
-    const start  = at(input.start, 0);
-    const last   = frames > 0 ? frames - 1 : start + 15 * (Number(input.step) || 1);
-    const end    = Math.min(at(input.end, last), exact ? frames - 1 : Infinity);
-    const step   = input.step === undefined || input.step === null ? Math.max(1, Math.ceil((end - start + 1) / 16)) : Math.floor(Number(input.step));
-    const why    = !(start >= 0) ? "start must be 0 or more" : !(start < frames || !exact) ? "start is past the last frame" : !(end >= start) ? "end must not be before start" : !(step >= 1) ? "step must be 1 or more" : "";
+    // a time's frame: the first at or after it (start), the last at or
+    // before it (end)
+    const frame  = (t: number, last: boolean) => (!sec ? Math.round(t) : times === null ? Math.round(t * fps) : last ? times.filter((x) => x <= t + 1e-6).length - 1 : times.filter((x) => x < t - 1e-6).length);
+    const start  = frame(s0, false);
+    const most   = nb > 0 ? nb - 1 : times !== null ? times.length - 1 : Infinity;
+    const end    = Math.min(given(input.end) ? frame(s1, true) : most === Infinity ? start + 15 * (Number(input.step) || 1) : most, most);
+    const step   = given(input.step) ? Math.floor(Number(input.step)) : Math.max(1, Math.ceil((end - start + 1) / 16));
+    const why    = !(s0 >= 0) ? "start must be 0 or more" : start > most ? "start is past the last frame" : !(end >= start) ? "end must not be before start" : !(step >= 1) ? "step must be 1 or more" : "";
     if (why !== "") {
       return { text: about + "\n" + why + ".", fail: true };
     }
@@ -366,43 +415,51 @@ export namespace Machine {
     }
     const rows  = Math.ceil(count / cols);
     const k     = Math.min(1, fits(cols));
-    const [w, h] = [Math.max(2, 2 * Math.floor((w0 * k) / 2)), Math.max(2, 2 * Math.floor((h0 * k) / 2))];
+    const [w, h] = [2 * Math.floor((w0 * k) / 2), 2 * Math.floor((h0 * k) / 2)];
+    if (Math.min(w, h) < CELL) {
+      return { text: about + "\nmax_side " + side + " is too small for " + count + " frames (each under " + CELL + " px): raise max_side or take fewer frames.", fail: true };
+    }
     const font  = Math.max(10, Math.round(Math.min(h / 10, w / 8)));
     const label = ":fontsize=" + font + ":fontcolor=white:box=1:boxcolor=black@0.6:boxborderw=2:x=2";
-    const seeks = fps > 0 && INDEXED.test(json.format?.format_name ?? "");
-    const pick  = (f: number) => (seeks && f > 0 ? ["-ss", String((f - 0.5) / fps)] : []);
-    const ffmpeg = (from: string[], input: string, graph: string, stdin?: Buffer) => Machine.exec(["ffmpeg", "-v", "error", ...from, "-i", input, "-an", "-sn", "-dn", "-vf", graph, "-frames:v", "1", "-f", "image2pipe", "-c:v", "mjpeg", "-q:v", "3", "pipe:1"], signal, stdin);
-    const grid  = "tile=" + cols + "x" + rows + ":padding=" + GAP + ":margin=" + GAP + ":color=white";
-    // its frames stamped (or not: an ffmpeg without drawtext), number n
-    // (an expression) and time; past SPARSE s apart, each sought on its
-    // own, then tiled; else all from one seek to start
+    const seeks = times !== null && INDEXED.test(json.format?.format_name ?? "");
+    const at    = (f: number) => (seeks && f > 0 ? (times![f - 1] + times![f]) / 2 : 0);
+    const from  = (f: number) => (at(f) > 0 ? ["-ss", at(f).toFixed(6)] : []);
+    const hms   = (t: number) => new Date(Math.max(0, t) * 1000).toISOString().slice(11, 23);
+    const out   = ["-frames:v", "1", "-f", "image2pipe", "-c:v", "mjpeg", "-q:v", "3", "pipe:1"];
+    const fit   = "scale=" + w + ":" + h + ",setsar=1";
+    const grid  = "tile=" + cols + "x" + rows + ":nb_frames=" + count + ":padding=" + GAP + ":margin=" + GAP + ":color=white";
+    const takes = Array.from({ length: count }, (_, i) => start + i * step);
+    const apart = seeks && count > 1 && (times![takes[count - 1]] - times![start]) / (count - 1) > SPARSE;
+    // the sheet, its frames stamped (or not: an ffmpeg without drawtext)
+    // with number n and time t (text, or drawtext expressions)
     const sheet = async (stamp: boolean) => {
-      const marks = (n: string, from: string[]) => (stamp ? ",drawtext=text='" + n + "'" + label + ":y=2,drawtext=text='%{pts\\:hms\\:" + (from[1] ?? 0) + "}'" + label + ":y=h-th-4" : "");
-      if (seeks && step / fps > SPARSE) {
+      const marks = (n: string, t: string) => (stamp ? ",drawtext=text='" + n + "'" + label + ":y=2,drawtext=text='" + t + "'" + label + ":y=h-th-4" : "");
+      if (apart) {
         const shots: Buffer[] = [];
-        for (let f = start; f <= end; f += step) {
-          const one = await ffmpeg(pick(f), file, "scale=" + w + ":" + h + marks(String(f), pick(f)));
-          if (one.code !== 0) {
+        for (const f of takes) {
+          const one = await Machine.exec([ffmpeg, "-v", "error", ...from(f), "-i", file, "-map", "0:" + stream.index, "-vf", fit + marks(String(f), hms(times![f]).replaceAll(":", "\\:")), ...out], signal);
+          if (one.code !== 0 || one.out.length === 0) {
             return one;
           }
           shots.push(one.out);
         }
-        return ffmpeg(["-f", "image2pipe", "-c:v", "mjpeg"], "pipe:0", grid, Buffer.concat(shots));
+        return Machine.exec([ffmpeg, "-v", "error", "-f", "image2pipe", "-c:v", "mjpeg", "-i", "pipe:0", "-vf", grid, ...out], signal, Buffer.concat(shots));
       }
       const first = seeks ? 0 : start;
-      const which = "select='between(n," + first + "," + (end - start + first) + ")*not(mod(n-" + first + "," + step + "))'";
-      return ffmpeg(pick(start), file, which + ",scale=" + w + ":" + h + marks("%{eif\\:n*" + step + "+" + start + "\\:d}", pick(start)) + "," + grid);
+      const which = "select='between(n," + first + "," + (end - start + first) + ")*not(mod(n-" + first + "," + step + "))',";
+      const marked = marks("%{eif\\:n*" + step + "+" + start + "\\:d}", "%{pts\\:hms\\:" + at(start) + "}");
+      return Machine.exec([ffmpeg, "-v", "error", ...from(start), "-i", file, "-map", "0:" + stream.index, "-vf", which + fit + marked + "," + grid, ...out], signal);
     };
     let made    = await sheet(true);
     let note    = "";
     if (made.code !== 0 && /drawtext|font/i.test(made.err)) {
       made = await sheet(false);
-      note = " (unstamped: this ffmpeg can't draw text)";
+      note = "; this ffmpeg can't draw text, so they are unstamped: " + takes.map((f) => f + (times === null ? "" : " (" + hms(times[f]) + ")")).join(", ");
     }
     if (made.code !== 0 || made.out.length === 0) {
       return { text: about + "\nffmpeg: " + (made.err.trim() || "no frame in that range"), fail: true };
     }
-    const range = "frames " + start + "-" + (start + (count - 1) * step) + (step > 1 ? " every " + step : "");
+    const range = "frames " + start + "-" + takes[count - 1] + (step > 1 ? " every " + step : "");
     const text  = about + "\nSheet: " + range + ", " + count + " frames in " + cols + "x" + rows + ", row by row" + note + ".";
     return { text, fail: false, imgs: [{ type: "image/jpeg", data: made.out.toString("base64") }] };
   }
