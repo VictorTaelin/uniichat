@@ -20,11 +20,13 @@
 // of the profile's models (Pick.falls); one on a model alone has none.
 // A try whose vendor is out for every call (End.off: busy past its
 // tries, the account refused) and that ran no tool nor took a message
-// (End.acted) goes on with the next pick; a patient one, out of picks,
-// asks again from the first after AGAIN. A pick out is skipped for COOL
-// (the last one is asked anyway), then asked by one request till it
-// answers. As a try's answer begins it tells its sink what it runs on
-// (Run).
+// (End.acted) goes on with the next pick, as does one its vendor can't
+// be asked for here (no stop: no key, not signed in); a patient one, out
+// of picks, asks again from the first after AGAIN. A pick out is skipped
+// for COOL (the last one is asked anyway), then asked by one request till
+// it answers; one not set up isn't skipped, so a sign-in counts at once.
+// A call no pick answered says why each failed, in order. As a try's
+// answer begins it tells its sink what it runs on (Run).
 //
 // Cache: a marked block ends a prefix the vendor caches. Single flight
 // (AskAI.wait), as a request is sent, once its payer let it through: one
@@ -189,12 +191,21 @@ export namespace AskAI {
     };
     const [out, feed] = AskAI.tie(on, ask.bill, send, stop);
     const picks = Pick.falls(ask, ask.profile === undefined ? [] : config.OFFER.profiles?.[ask.profile] ?? []);
-    let k = AskAI.up(picks, 0);
+    // why each pick failed or was skipped, this call
+    const whys: (string | null)[] = picks.map(() => null);
+    const skip = (from: number): number => {
+      const to = AskAI.up(picks, from);
+      for (let i = from; i < to; i++) {
+        whys[i] = (DOWN.get(AskAI.down_key(picks[i]))?.why ?? "") + " (skipped for a minute)";
+      }
+      return to;
+    };
+    let k = skip(0);
     // a try on picks[k], having left the one before it if any
     const go = (): Try => {
       const run = picks[k];
       const from = k > 0 ? picks[k - 1] : null;
-      const why = from === null ? "" : DOWN.get(AskAI.down_key(from))?.why ?? "";
+      const why = from === null ? "" : whys[k - 1] ?? DOWN.get(AskAI.down_key(from))?.why ?? "";
       let heard = picks.length === 1;
       const hear = (ev: Event) => {
         if (!heard && (ev.$ === "Delta" || (ev.$ === "Entry" && ev.kind !== "mind"))) {
@@ -212,19 +223,22 @@ export namespace AskAI {
       for (;;) {
         const failed = !end.ok && end.stop !== "fail" && end.stop !== "lost" && !halt.signal.aborted;
         const off = failed && end.off === true;
+        const unset = failed && end.stop === undefined;
         const up = !halt.signal.aborted && (end.ok || end.stop === "fail" || (end.stop === "down" && !off));
         if (picks.length > 1 && (off || up)) {
           AskAI.down(picks[k], off ? end.text : null);
         }
-        const next = off && end.acted !== true && k < picks.length - 1;
+        whys[k] = failed ? end.text : null;
+        const next = (off || unset) && end.acted !== true && k < picks.length - 1;
         const wait = failed && !next && ask.patient === true;
         if (wait) {
           await Machine.nap(AGAIN, halt.signal);
         }
         if (halt.signal.aborted || (!next && !wait)) {
-          return end;
+          const all = whys.flatMap((why, i) => (why === null ? [] : [picks[i].vendor + ":" + Pick.named(picks[i]).model + ": " + why]));
+          return failed && all.length > 1 ? { ...end, text: "no model answered; " + all.join("; ") } : end;
         }
-        k = AskAI.up(picks, next ? k + 1 : 0);
+        k = skip(next ? k + 1 : 0);
         call = go();
         end.left.forEach(send);
         end = await call.done;
