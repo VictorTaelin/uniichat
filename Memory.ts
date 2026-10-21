@@ -1190,7 +1190,7 @@ const HL = 1.5 * 11.5, HM = .7 * 11.5, PB = .7 * em, calm = matchMedia("(prefers
 tree.style.setProperty("--card", HC + "px");
 const T = B.length - 1, vt = Math.max(-1, ...V.map((p) => p[0])), seen = new Set(V.map((p) => p.join(".")));
 const has = (l, i) => (l < 0 ? i < N : B[l][i] === "1"), at = (l, i) => i * 2 ** Math.max(0, l), len = (l) => 2 ** Math.max(0, l);
-const LEGEND = { "#TREE": "<b>IN CONTEXT</b> marks the text Unii's prompt holds now: old messages as high-level summaries, recent ones low or whole.", "#VIEW": "What Unii's prompt holds now, in order: old messages as summaries, recent ones whole." };
+const LEGEND = { "#VIEW": "What Unii's prompt holds now, in order: old messages as summaries, recent ones whole." };
 const note = document.createElement("p");
 note.className = "note";
 const lo = (list, ok) => { let a = 0, z = list.length; while (a < z) { const m = (a + z) >> 1; ok(list[m]) ? (z = m) : (a = m + 1); } return a; };
