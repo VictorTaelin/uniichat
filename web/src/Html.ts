@@ -231,8 +231,7 @@ function control_html(r: Row): string {
       return checks_html("vendors", VENDORS, list(r.value), () => "") + `<p class="warn"></p>`;
     }
     case "models": {
-      const of = new Map(Pick.models(VENDORS, LABELS).map(([vendor, model]) => [model.label, vendor as string]));
-      return checks_html("models", LABELS, list(r.value), (x) => of.get(x) ?? "");
+      return checks_html("models", LABELS, list(r.value), (x) => Pick.models(VENDORS, [x]).map(([vendor]) => vendor).join(" "));
     }
     case "pick":
     case "compactor":
@@ -256,8 +255,8 @@ export function list_changed(was: string[], now: string[]): string[] | null {
   return same ? null : [...was.filter((x) => now.includes(x)), ...now.filter((x) => !was.includes(x))];
 }
 
-// a box per item; a model's names its vendor (`data-vendor`: main.ts
-// shows only the vendors' checked)
+// a box per item; a model's names the vendors that offer it
+// (`data-vendor`, space-separated: main.ts shows it while one is checked)
 function checks_html(name: string, all: string[], on: string[], vendor: (x: string) => string): string {
   const box = (x: string) => `<label class="opt" data-vendor="${esc(vendor(x))}"><input type="checkbox" name="${name}" value="${esc(x)}"${on.includes(x) ? " checked" : ""}> ${esc(x)}</label>`;
   const odd = on.filter((x) => !all.includes(x));

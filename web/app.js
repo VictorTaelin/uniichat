@@ -1528,8 +1528,7 @@ function control_html(r) {
       return checks_html("vendors", VENDORS, list(r.value), () => "") + `<p class="warn"></p>`;
     }
     case "models": {
-      const of = new Map(Pick.models(VENDORS, LABELS).map(([vendor, model]) => [model.label, vendor]));
-      return checks_html("models", LABELS, list(r.value), (x) => of.get(x) ?? "");
+      return checks_html("models", LABELS, list(r.value), (x) => Pick.models(VENDORS, [x]).map(([vendor]) => vendor).join(" "));
     }
     case "pick":
     case "compactor":
@@ -2474,7 +2473,7 @@ function settings_draw(page) {
   };
   const picks = () => {
     const vendors = listed("vendors");
-    form.querySelectorAll(".opt[data-vendor]:not([data-vendor=''])").forEach((o) => o.hidden = !vendors.includes(o.dataset.vendor));
+    form.querySelectorAll(".opt[data-vendor]:not([data-vendor=''])").forEach((o) => o.hidden = !o.dataset.vendor.split(" ").some((v) => vendors.includes(v)));
     for (const key of PICKS) {
       const value = form.querySelector(`input[name="${key}"]`);
       const four = value?.parentElement.querySelector(".four");

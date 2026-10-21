@@ -1039,7 +1039,7 @@ function settings_draw(page: any): void {
   // what they offer, a vendor checked without a key warned of
   const picks = () => {
     const vendors = listed("vendors");
-    form.querySelectorAll<HTMLElement>(".opt[data-vendor]:not([data-vendor=''])").forEach((o) => (o.hidden = !vendors.includes(o.dataset.vendor!)));
+    form.querySelectorAll<HTMLElement>(".opt[data-vendor]:not([data-vendor=''])").forEach((o) => (o.hidden = !o.dataset.vendor!.split(" ").some((v) => vendors.includes(v))));
     for (const key of Html.PICKS) {
       const value = form.querySelector<HTMLInputElement>(`input[name="${key}"]`);
       const four = value?.parentElement!.querySelector<HTMLElement>(".four");
