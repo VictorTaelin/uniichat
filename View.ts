@@ -168,7 +168,7 @@ export type Row =
 
 export type Tab = { name: string | null; here: boolean; text: string };
 
-// hint: what the knob's value means (a tooltip; the site's note when it
+// hint: the knob's value, named (a tooltip; the site's note when it
 // changes); choices: its menu (the site's)
 export type Knob = { text: string; move: Move; hint: string; choices: Choice[] };
 
@@ -543,9 +543,6 @@ export function view_running(v: View): boolean {
   return v.busy || v.agents.length > 0;
 }
 
-// each speed, told without its price
-const SPEED_HINTS: Record<string, string> = { slow: "normal speed", fast: "quicker replies", ultrafast: "quickest replies" };
-
 export function view_pick(v: View): Knob[] {
   if (v.pick === null) {
     return [];
@@ -553,8 +550,8 @@ export function view_pick(v: View): Knob[] {
   const { model, effort, speed } = v.pick;
   return [
     { text: model, move: "model", hint: model, choices: view_choices(v.pick, "model", v) },
-    { text: effort, move: "effort", hint: effort + " effort: how long it thinks first; more is smarter, slower and costs more", choices: view_choices(v.pick, "effort", v) },
-    { text: speed, move: "speed", hint: speed + ": " + (SPEED_HINTS[speed] ?? "reply speed"), choices: view_choices(v.pick, "speed", v) },
+    { text: effort, move: "effort", hint: effort + " effort", choices: view_choices(v.pick, "effort", v) },
+    { text: speed, move: "speed", hint: speed, choices: view_choices(v.pick, "speed", v) },
   ];
 }
 
