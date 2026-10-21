@@ -1730,6 +1730,7 @@ function chat() {
     mine_show();
   };
   $(".mine").onclick = mine;
+  $(".down").onclick = down;
   draw(true);
 }
 function signed() {
@@ -2293,6 +2294,12 @@ function mine() {
 function mine_show() {
   const first = document.querySelector("#log .msg.user");
   $(".mine").hidden = first === null || !mine_above(first);
+  $(".down").hidden = innerHeight + scrollY >= document.documentElement.scrollHeight - 1;
+}
+function down() {
+  scrollTo(0, document.documentElement.scrollHeight);
+  P.end = true;
+  mine_show();
 }
 function mine_above(el) {
   return el.getBoundingClientRect().top < $("header").getBoundingClientRect().bottom;

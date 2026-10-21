@@ -137,10 +137,13 @@ body.account footer > :not(#toast) { display: none; }
 .composer.off .send { background: var(--hair); cursor: default; }
 .composer.off :is(.attach, .mic) { visibility: hidden; }
 /* up to the user's message (main.ts mine): the ☰ button's look, smaller,
-   floating under it */
-.mine { position: fixed; top: calc(var(--head) + 6px); right: max(20px, env(safe-area-inset-right)); width: 30px; height: 26px; display: grid; place-items: center; border-radius: 7px; background: var(--block); }
-.mine:hover { background: var(--hover); }
-.mine svg { width: 14px; height: 14px; stroke-width: 2.2; }
+   under the header at the column's right edge; down to the bottom (main.ts
+   down) the same, above the pick bar's right end */
+.mine, .down { width: 30px; height: 26px; display: grid; place-items: center; border-radius: 7px; background: var(--block); }
+.mine { position: fixed; top: calc(var(--head) + 6px); right: max(20px, env(safe-area-inset-right), 50% - var(--col) / 2); }
+.down { position: absolute; bottom: calc(100% - 10px); right: max(20px, env(safe-area-inset-right), 50% - var(--col) / 2); }
+:is(.mine, .down):hover { background: var(--hover); }
+:is(.mine, .down) svg { width: 14px; height: 14px; stroke-width: 2.2; }
 #toast { width: fit-content; max-width: min(560px, 100%); margin: 0 auto 10px; padding: 8px 16px; border-radius: 12px; background: var(--ink); color: var(--paper); font-size: 13.5px; }
 
 #tabs { width: min(var(--col), 100%); margin: 6px auto 0; display: flex; gap: 16px; overflow-x: auto; white-space: nowrap; scrollbar-width: none; font: 13px/20px var(--sans); color: var(--mid); }
@@ -332,7 +335,7 @@ header > .imping { display: flex; flex-direction: column; justify-content: cente
    centered on each, not drawn), links in small print above and below */
 @media (pointer: coarse) {
   :is(header > button, #pick button, #tabs button) { position: relative; }
-  :is(header > button, #pick button, #tabs button, .mine, .copy, .open.one > .fold)::after { content: ""; position: absolute; left: 50%; top: 50%; width: max(100%, 44px); height: max(100%, 44px); transform: translate(-50%, -50%); }
+  :is(header > button, #pick button, #tabs button, .mine, .down, .copy, .open.one > .fold)::after { content: ""; position: absolute; left: 50%; top: 50%; width: max(100%, 44px); height: max(100%, 44px); transform: translate(-50%, -50%); }
   :is(.ai, .fine, .foot) a { padding: 14px 0; }
   :is(.chip, .usd button) { height: 44px; }
   [popover] > button { min-height: 44px; }
@@ -349,7 +352,8 @@ header > .imping { display: flex; flex-direction: column; justify-content: cente
 @media (max-width: 600px) {
   :root { --head: 51px; }
   header { padding: 0 14px; }
-  .mine { right: 14px; }
+  .mine, .down { right: 14px; }
+  .down { bottom: calc(100% - 4px); }
   .brand span { display: none; }
   header > button { height: 30px; padding: 0 10px; font-size: 13px; }
   #log { width: calc(100% - 28px); }

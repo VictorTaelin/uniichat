@@ -252,6 +252,7 @@ function chat(): void {
     mine_show();
   };
   $(".mine").onclick = mine;
+  $(".down").onclick = down;
   draw(true);
 }
 
@@ -952,10 +953,20 @@ function mine(): void {
   mine_show();
 }
 
-// shown while one of the user's messages is above the screen
+// shown while one of the user's messages is above the screen; the one
+// down (down), while the page is not at its bottom
 function mine_show(): void {
   const first = document.querySelector<HTMLElement>("#log .msg.user");
   $(".mine").hidden = first === null || !mine_above(first);
+  $(".down").hidden = innerHeight + scrollY >= document.documentElement.scrollHeight - 1;
+}
+
+// the button above the pick bar goes down to the page's bottom, which the
+// next draws then keep
+function down(): void {
+  scrollTo(0, document.documentElement.scrollHeight);
+  P.end = true;
+  mine_show();
 }
 
 function mine_above(el: HTMLElement): boolean {
