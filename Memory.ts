@@ -1118,8 +1118,13 @@ ${Memory.cut(line)}| ← LIMIT`;
   // merges. A column holds its level's nodes only (one not built yet
   // said so); the leftmost in view is packed, the columns right of it
   // spread to match. It opens on the view's top level, the view's nodes
-  // marked "in context". The script lays out the cards near the screen
-  // and fetches their text (/api/tree): a chat has thousands
+  // marked "in context". Every card is as tall, its text cut (faded),
+  // so the tree's shape alone lays out the cards and their lines, and a
+  // text loaded moves nothing. The script draws the cards near the
+  // screen and fetches their text (/api/tree): a chat has thousands. A
+  // card cut, clicked or tapped, grows over its neighbours, as much up
+  // as down (kept on screen), its shadow on them; again, Escape or
+  // another click shuts it
   export function* page(mem: Memory): Generator<string> {
     const esc   = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;");
     // the nodes built: those whose slot in the tree's index has a day
@@ -1143,9 +1148,12 @@ h4 { margin: .8em 0 .2em; font: 600 11.5px/1.5 var(--sans); color: var(--mid); }
 #TREE::after { content: ""; flex: 0 0 calc(100% - min(22em, 65vw) - var(--g)); }
 .col { flex: 0 0 min(22em, 65vw); position: relative; scroll-snap-align: start; }
 .col h3 { position: sticky; top: 0; z-index: 2; margin: 0; height: 3em; font: 600 .8em/3em var(--sans); letter-spacing: .06em; color: var(--mid); background: var(--paper); cursor: pointer; margin-right: calc(0px - var(--g)); } .col h3:hover { color: var(--ink); }
-.s { position: absolute; left: 0; right: 0; padding: 0 14px .7em; border-radius: 10px; background: var(--block); } .s h4 { margin-top: .7em; }
+.s { position: absolute; left: 0; right: 0; height: var(--card); display: flex; flex-direction: column; padding: 0 14px .7em; border-radius: 10px; background: var(--block); } .s h4 { flex: none; margin-top: .7em; } .s pre { flex: 1; min-height: 0; overflow: hidden; }
+.s.more { cursor: pointer; } .s.more pre { -webkit-mask-image: linear-gradient(#000 calc(100% - 1.6em), transparent); mask-image: linear-gradient(#000 calc(100% - 1.6em), transparent); }
+.s.big { z-index: 1; --lift-shadow: 0 0 0 1px var(--frame), var(--shadow), 0 10px 30px rgb(0 0 0 / .16); box-shadow: var(--lift-shadow); } .s.big.in { box-shadow: inset 3px 0 var(--mid), var(--lift-shadow); }
+.s.big pre { overflow: auto; overscroll-behavior: contain; -webkit-mask-image: none; mask-image: none; } .s.ease { z-index: 1; transition: top .16s ease-out, height .16s ease-out, box-shadow .16s ease-out; }
 .s:focus-visible { outline: 2px solid var(--ink); outline-offset: -2px; } .wait { overflow: hidden; } .s.in { box-shadow: inset 3px 0 var(--mid); } .s.in h4::after { content: " · IN CONTEXT"; } .s.none { background: none; outline: 1px dashed var(--hair); outline-offset: -1px; color: var(--mid); }
-.up::after { content: ""; position: absolute; left: 100%; width: calc(var(--g) / 2); top: 50%; border-top: 1px solid var(--frame); }
+.up::after { content: ""; position: absolute; left: 100%; width: calc(var(--g) / 2); top: var(--c, 50%); border-top: 1px solid var(--frame); }
 .dn::before { content: ""; position: absolute; right: 100%; width: calc(var(--g) / 2); top: var(--t); height: calc(var(--h) + 1px); border-left: 1px solid var(--frame); background: linear-gradient(var(--frame), var(--frame)) 0 var(--m) / 100% 1px no-repeat; }
 .s.user pre, .s.unii pre { font: 16px/1.55 var(--sans); } .s.tool pre, .s.echo pre { font: 12.5px/1.5 var(--mono); }
 @media (max-width: 600px) { section { padding: 0 14px 14px; } #TREE { scroll-padding: 0 14px; } .top { padding: 4px 14px 0; } }
@@ -1160,16 +1168,15 @@ h4 { margin: .8em 0 .2em; font: 600 11.5px/1.5 var(--sans); color: var(--mid); }
     // F, the leftmost column's cards: level L's nodes (L -1: the
     // messages), so a node joins its two halves (the view's nodes, of
     // many levels, are marked, and whole under VIEW); the messages past
-    // L's last node, too few for one, a note under it; each card's height is
-    // as last measured (else its level's mean), those of a column right
-    // of it as theirs need: a node is set mid its cards, the last one's
-    // slot grown till it fits; the message at the top of the screen
-    // stays there as heights come or L changes, which eases out over
-    // 300 ms, as Google's bracket does
+    // L's last node, too few for one, a note under it; every card HC
+    // tall, a node set mid the cards it merges; the message at the top
+    // of the screen stays there as L changes, which eases out over 300
+    // ms, as Google's bracket does
     yield `</section>
 <script>
 const N = ${mem.count}, B = ${JSON.stringify(has)}, V = ${JSON.stringify(mem.view.parts.map((part) => [part.l, part.i]))};
-const tree = document.getElementById("TREE"), cols = [...tree.children], em = parseFloat(getComputedStyle(tree).fontSize), G = .75 * em, Y = 2.6 * em;
+const tree = document.getElementById("TREE"), cols = [...tree.children], em = parseFloat(getComputedStyle(tree).fontSize), G = .75 * em, Y = 2.6 * em, HC = 9 * em;
+tree.style.setProperty("--card", HC + "px");
 const T = B.length - 1, vt = Math.max(-1, ...V.map((p) => p[0])), seen = new Set(V.map((p) => p.join(".")));
 const has = (l, i) => (l < 0 ? i < N : B[l][i] === "1"), at = (l, i) => i * 2 ** Math.max(0, l), len = (l) => 2 ** Math.max(0, l);
 const LEGEND = { "#TREE": "<b>IN CONTEXT</b> marks the text Unii's prompt holds now: old messages as high-level summaries, recent ones low or whole.", "#VIEW": "What Unii's prompt holds now, in order: old messages as summaries, recent ones whole." };
@@ -1177,9 +1184,10 @@ const note = document.createElement("p");
 note.className = "note";
 const lo = (list, ok) => { let a = 0, z = list.length; while (a < z) { const m = (a + z) >> 1; ok(list[m]) ? (z = m) : (a = m + 1); } return a; };
 const step = () => cols[1].offsetLeft - cols[0].offsetLeft || 1;
-const H = new Map(), got = new Map(), shown = new Map();
-let mean = {}, L = vt, plan, moving = 0, again = 0, wait, width = 0, started = false, left = 0, sliding = false, done = () => {}, goal = null;
-const height = (l, i) => H.get(l + "." + i) ?? (mean[l] ? mean[l][0] / mean[l][1] : 6 * em);
+const got = new Map(), shown = new Map();
+// big: the card grown, if any
+let L = vt, plan, moving = 0, wait, width = 0, started = false, left = 0, sliding = false, done = () => {}, goal = null, big = null;
+const height = () => HC;
 const frontier = (L) => Array.from({ length: L < 0 ? N : B[L].length }, (_, i) => [L, i]);
 const layout = (L) => {
   const F = frontier(L), A = F.map((p) => at(...p)), slot = F.map((p) => height(...p) + G), P = new Float64Array(F.length + 1);
@@ -1235,7 +1243,6 @@ const make = (l, i) => {
 const fill = (s, x) => {
   s.classList.remove("wait");
   /^\\w+$/.test(x.k ?? "") && s.classList.add(x.k);
-  s.style.height = "";
   s.firstChild.textContent = x.h;
   s.lastChild.textContent = x.t;
   s.fresh = true;
@@ -1273,15 +1280,12 @@ const draw = (y = tree.scrollTop, e = 1, old) => {
       shown.set(k, s);
       keep.add(k);
       s.v = [t, ...v].map((z, j) => (w ? w[j] + (z - w[j]) * e : z));
-      s.h = h;
-      s.style.top = Y + s.v[0] + "px";
       s.classList.toggle("up", up === 1);
       s.classList.toggle("dn", v[1] >= 0);
-      ["--t", "--h", "--m"].forEach((name, j) => s.style.setProperty(name, s.v[j + 1] + "px"));
-      s.classList.contains("wait") && (s.style.height = h + "px");
+      pos(s);
     }
   });
-  shown.forEach((s, k) => keep.has(k) || (s.remove(), shown.delete(k)));
+  shown.forEach((s, k) => keep.has(k) || (s === big && shut(true), s.remove(), shown.delete(k)));
   const upto = L < 0 ? N : B[L].length * 2 ** L;
   upto < N ? (note.textContent = (N - upto === 1 ? "Message #" + upto + " isn't" : "Messages #" + upto + "-" + (N - 1) + " aren't") + " in a LVL" + L + " summary yet: each holds " + 2 ** L + ".") : note.remove();
   upto < N && ((note.style.top = Y + p.total + "px"), note.parentNode !== cols[L + 1] && cols[L + 1].append(note));
@@ -1289,20 +1293,70 @@ const draw = (y = tree.scrollTop, e = 1, old) => {
   back.disabled = tree.scrollLeft < 1;
   next.disabled = tree.scrollLeft + tree.clientWidth >= tree.scrollWidth - 1;
   load();
-  if (e === 1) {
-    let off = false;
-    shown.forEach((s) => {
-      if (s.fresh) {
-        const [l, i] = s.li, h = s.offsetHeight, m = (mean[l] ??= [0, 0]), was = H.get(l + "." + i);
-        was === undefined ? m[1]++ : (m[0] -= was);
-        m[0] += h;
-        H.set(l + "." + i, h);
-        s.fresh = false;
-        off ||= Math.abs(h - s.h) > 1;
-      }
-    });
-    off && !again && (again = requestAnimationFrame(redo));
-  }
+  // the cards whose text came: is it cut? (all read, then all marked)
+  const fresh = [...shown.values()].filter((s) => s.fresh);
+  fresh.map((s) => s.lastChild.scrollHeight > s.lastChild.clientHeight + 1).forEach((cut, j) => {
+    const s = fresh[j];
+    s.fresh = false;
+    s.classList.toggle("more", cut);
+    cut ? s.setAttribute("aria-expanded", s === big) : s.removeAttribute("aria-expanded");
+  });
+};
+// a card where plan puts it (s.v), its lines too; grown (big), dy from
+// there, its lines kept where they were
+const pos = (s) => {
+  const [t, a, h, m] = s.v, d = s === big ? s.dy : 0;
+  s.style.top = Y + t + d + "px";
+  [["--t", a - d], ["--h", h], ["--m", m], ["--c", HC / 2 - d]].forEach(([name, z]) => s.style.setProperty(name, z + "px"));
+};
+// a change of size or place eased (ease: on top meanwhile)
+const ease = (s) => {
+  s.offsetHeight;
+  s.classList.add("ease");
+  clearTimeout(s.eased);
+  s.eased = setTimeout(() => s.classList.remove("ease"), 200);
+};
+// card s grown to its text, up to the screen's height, as much up as
+// down, then moved onto the screen and into the tree if it would leave
+// them; its neighbours stay
+const grow = (s) => {
+  const pre = s.lastChild;
+  s.classList.add("big");
+  s.style.height = "auto";
+  pre.style.flex = "none";
+  const need = s.offsetHeight, top0 = Y + s.v[0], st = tree.scrollTop, sh = tree.clientHeight;
+  s.style.height = pre.style.flex = "";
+  const hb = Math.min(need, Math.max(HC, sh - Y - G));
+  if (hb <= HC + 1) return s.classList.remove("big", "more"), s.removeAttribute("aria-expanded");
+  let top = top0 + (HC - hb) / 2;
+  top = Math.max(st + Y, Math.min(top, st + sh - G - hb));
+  top = Math.max(Y, Math.min(top, Y + plan.total - G - hb));
+  big = s;
+  s.dy = top - top0;
+  s.setAttribute("aria-expanded", "true");
+  ease(s);
+  s.style.height = hb + "px";
+  pos(s);
+};
+// the card grown back (now: not eased)
+const shut = (now) => {
+  const s = big;
+  if (!s) return;
+  big = null;
+  s.classList.remove("big");
+  s.setAttribute("aria-expanded", "false");
+  s.lastChild.scrollTop = 0;
+  now ? s.classList.remove("ease") : ease(s);
+  s.style.height = "";
+  pos(s);
+};
+// a click on a card: it shuts if grown (unless its text is being
+// selected), else the one grown shuts and it grows, if cut
+const press = (s) => {
+  const sel = getSelection();
+  if (s === big) return (sel.isCollapsed || !s.contains(sel.anchorNode)) && shut();
+  shut();
+  s.classList.contains("more") && grow(s);
 };
 // the message at the top of the screen, as F's card holding it, how far
 // into it, and the message as a fraction; where it is in plan p
@@ -1318,7 +1372,6 @@ const place = (a, p) => {
 // (not while sliding to another column: setting scrollTop would stop it;
 // its end packs anew)
 const redo = () => {
-  again = 0;
   if (!moving && !sliding) {
     const a = anchor();
     plan = layout(L);
@@ -1330,6 +1383,7 @@ const pack = () => {
   sliding = false;
   goal = null;
   if (to === L) return moving || redo();
+  shut(true);
   const a = anchor(), old = new Map([...shown].map(([k, s]) => [k, s.v])), y0 = tree.scrollTop, t0 = performance.now(), me = ++moving;
   old.total = plan.total;
   L = to;
@@ -1349,7 +1403,7 @@ tree.addEventListener(end ? "scrollend" : "scroll", () => { clearTimeout(wait); 
 // a slide the user starts mid-ease ends the ease where it is (setting
 // scrollTop would stop the slide)
 tree.addEventListener("scroll", () => {
-  tree.scrollLeft !== left && ((left = tree.scrollLeft), (sliding = true), (moving = 0));
+  tree.scrollLeft !== left && ((left = tree.scrollLeft), (sliding = true), (moving = 0), shut(true));
   moving || draw();
 });
 plan = layout(L);
@@ -1358,12 +1412,13 @@ onload = onresize = onhashchange = () => {
   legend.innerHTML = LEGEND[location.hash] ?? "";
   document.querySelectorAll("header a").forEach((a) => a.classList.toggle("here", a.hash === location.hash));
   // (TREE is shown once the page has parsed, as its hash targets it)
+  location.hash === "#TREE" || shut(true);
   if (location.hash === "#TREE" && tree.clientWidth > 0) {
-    // as wide a column, new heights
+    // as wide a column, as much text cut? (a phone's bar coming and
+    // going changes the height only)
     if (cols[0].offsetWidth !== width) {
       width = cols[0].offsetWidth;
-      H.clear();
-      mean = {};
+      shut(true);
       shown.forEach((s) => (s.fresh = !s.classList.contains("wait")));
     }
     started || ((started = true), (tree.scrollLeft = (L + 1) * step()));
@@ -1385,13 +1440,19 @@ const go = (t) => {
   const col = t.closest("h3")?.parentNode;
   col && slide(cols.indexOf(col));
 };
-tree.onclick = (e) => go(e.target);
+tree.onclick = (e) => {
+  const s = e.target.closest(".s");
+  s ? press(s) : (shut(), go(e.target));
+};
 tree.onkeydown = (e) => {
-  if ((e.key === "Enter" || e.key === " ") && e.target.matches("h3")) {
+  if ((e.key === "Enter" || e.key === " ") && e.target.matches("h3, .s")) {
     e.preventDefault();
-    go(e.target);
+    e.target.matches("h3") ? go(e.target) : press(e.target);
   }
 };
+// a click elsewhere, or Escape, shuts the card grown
+addEventListener("click", (e) => tree.contains(e.target) || shut());
+addEventListener("keydown", (e) => e.key === "Escape" && big && (big.focus({ preventScroll: true }), shut()));
 </script>
 `;
   }
