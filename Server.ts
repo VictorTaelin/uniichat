@@ -44,7 +44,7 @@ import { JOBS, Memory, type Given, type Msg as Log, type Share } from "./Memory.
 import { OpenAI, TRANSCRIBER } from "./OpenAI.ts";
 import { Pick } from "./Pick.ts";
 import { Price } from "./Price.ts";
-import { MASTER, SEARCHES, Tools, type Agent, type Live, type Moved as Kit } from "./Tools.ts";
+import { COMPACT, MASTER, SEARCHES, Tools, type Agent, type Live, type Moved as Kit } from "./Tools.ts";
 import { email_ask, FRAME, IMAGES, live_push, MOVE, PING, QUIT, SUMMARIES, TICK, TURN, WIRE, type Answer, type Part, type Server as Out, type Wait } from "./View.ts";
 import * as config from "./Config.ts";
 import hello_md from "./hello.md" with { type: "text" };
@@ -165,12 +165,12 @@ const HAND       = config.DIR + "/hand";
 const LEAVE      = 500;
 // how a call ends whose process ended first (a crash)
 const ENDED      = "the server process that ran it ended";
-// a turn's head, as a summary's is "Compaction:": one prompt serves both
+// a turn's head, as a summary's is "Compaction:"
 const HEAD       = "Turn: the user's new message:\n\n";
-// a goal's check (Chat.check): its own system prompt (Unii's, which says
-// a call is a turn or a compaction, made the model summarize the chat
-// instead of answering), asked after the chat (the view, its latest
-// messages whole) of its goal; unmet, the user's nudge
+// a goal's check (Chat.check): its own system prompt (Unii's made the
+// model summarize the chat instead of answering), asked after the chat
+// (the view, its latest messages whole) of its goal; unmet, the user's
+// nudge
 const GOAL       = "You check a goal. Below is a chat between a user and Unii, an AI agent: its older messages as summary lines (id+n|text), then its latest messages whole, then the goal the user set with /goal. Answer yes if the chat shows the goal fully satisfied now, else no. Write that one word, nothing else.";
 const GOAL_ASK   = "\nThe goal:\n\n";
 const GOAL_NO    = "The goal isn't satisfied yet: keep working.";
@@ -277,7 +277,7 @@ export namespace Chat {
     }
     const acct = { cloud, user: user.id };
     const dir = config.DIR + "/users/" + user.id;
-    const mem = Memory.load(dir, () => Chat.share(chat), (id, ans) => Cloud.act_put(acct, id, ans));
+    const mem = Memory.load(dir, () => Chat.share(chat, COMPACT), (id, ans) => Cloud.act_put(acct, id, ans));
     const tools = Tools.serve(mem, {
       push   : (agent, kind, text) => Chat.push(chat, agent, kind, text),
       on     : (agent, ev) => Chat.on(chat, agent, ev),
@@ -333,10 +333,11 @@ export namespace Chat {
   }
 
   // what every call of the chat starts with, a summary's too: its system
-  // prompt. A summary gets no tools: one it called, ours or the API's
-  // own (web search brings code execution), sent its whole input again
-  export function share(chat: Chat): Share {
-    const system = Tools.system(MASTER);
+  // prompt, a turn's (MASTER) or a summary's (COMPACT). A summary gets no
+  // tools: one it called, ours or the API's own (web search brings code
+  // execution), sent its whole input again
+  export function share(chat: Chat, prompt: string = MASTER): Share {
+    const system = Tools.system(prompt);
     return { ...Pick.ask(chat.pick), system, searches: 0, server: "" };
   }
 

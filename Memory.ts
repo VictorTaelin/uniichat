@@ -8,7 +8,7 @@
 // (or the line it was logged with) in at most NODE bytes, node (l,i)
 // merges (l-1,2i) and (l-1,2i+1). A source that fits is its node; else a
 // compaction writes it: a call like a turn, on the config's COMPACTOR,
-// with the same system prompt (`share`, Server.ts), no tools, and its
+// with its own system prompt (`share`, Server.ts), no tools, and its
 // own view (`seen`) up to the node's `ctx`; a line too long is asked
 // anew (build). The call asks till it is answered (AskAI patient: an
 // outage only delays a node, never harms it); answered with no line (a
@@ -82,7 +82,8 @@ type Sum = Part & { kind: Served };
 // a summary running as its chat moved (Memory.give): its node, its call's id
 export type Given = [number, number, string];
 
-// what a compaction shares with the chat's turns: all but the blocks
+// what a compaction's call starts with, as a turn's does: all but the
+// blocks (its own system prompt: Server.ts share)
 export type Share = Omit<Ask, "blocks">;
 
 // a log: of messages (main) or of nodes (tree)
@@ -108,7 +109,7 @@ type Saved = Kept & { seen?: Kept; main: End; tree: End; pick: object | null; go
 // sides: the side by the last message of nodes not built; calls: those
 // building's calls; hold: why each side is held (null: it builds);
 // wait: checks run as the views change; share: what
-// compactions share with the chat's turns; pay: what pays them (none:
+// compactions' calls start with; pay: what pays them (none:
 // free); made, acted: told of each node built, of each act indexed
 export type Memory = {
   dir    : string;
